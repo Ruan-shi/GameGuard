@@ -1,0 +1,33 @@
+# 编译产物
+GameGuard.exe
+*.bak
+build.log
+_run_marker.log
+_run_marker.txt
+
+# 运行时生成的本地文件
+gameguard.log
+config.json
+paused.flag
+panel_check.png
+*_snap.png
+selftest.png
+
+# 旧版遗留文件（PowerShell 启动器时期的产物，不纳入版本库）
+Launcher.cs
+Launcher-old.exe
+build.ps1
+install.ps1
+uninstall.ps1
+probe.ps1
+probe.exe
+probe.log
+build_probe.ps1
+
+# 打包输出
+dist/
+
+# IDE
+.vs/
+obj/
+bin/
