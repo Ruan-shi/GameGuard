@@ -2,20 +2,33 @@
   "games": [
     {
       "name": "影之刃零",
-      "processes": [ "PBZ", "8za_v2" ],
-      "pathFilter": [ "PBZ" ]
+      "processes": [
+        "PBZ",
+        "8za_v2"
+      ],
+      "pathFilter": [
+        "PBZ"
+      ]
     }
   ],
-  "mode": 0,
   "useSchedule": true,
+  "useContinuous": false,
+  "useQuota": false,
   "quotaMinutes": 120,
   "quotaWarnMin": 10,
   "scheduleStart": "20:00",
   "scheduleEnd": "22:30",
   "scheduleWarnMin": 3,
-  "scheduleDays": [ 0, 1, 2, 3, 4, 5, 6 ],
+  "scheduleDays": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
   "outsideCountdown": 5,
-  "scheduleWithContinuous": true,
   "playMinutes": 60,
   "extendMinutes": 5,
   "maxExtend": 2,
