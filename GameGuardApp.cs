@@ -1864,7 +1864,7 @@ namespace GameGuard
 
         public static Form Current { get { return _panel; } }
 
-        // 上调审批：delta<=0 或小幅上调直接放行；>=30 分钟弹窗确认；当日已上调过则拒绝
+        // 上调审批（数值型：配额 / 连续时长）：delta<=0 或小幅上调直接放行；>=30 分钟弹窗确认；当日已上调过则拒绝
         // 规则：每个数字每天只能上调 1 次（下调不限）
         private static bool ApproveUp(Form owner, string name, int oldV, int newV, int usedToday)
         {
@@ -1891,6 +1891,45 @@ namespace GameGuard
                 return ans == DialogResult.Yes;
             }
             return true;
+        }
+
+        // 时段上调审批（双边缘判定）：
+        //   开始时间提前 ≥30 分钟 / 结束时间推后 ≥30 分钟 / 总时长增加 ≥30 分钟，任一命中即视为上调
+        // 规则：时段每天只能上调 1 次（缩短随时可以）
+        private static bool ApproveSched(Form owner, DateTime oldS, DateTime oldE, DateTime newS, DateTime newE, int usedToday)
+        {
+            bool startEarlier = newS < oldS.AddMinutes(-30);          // 开始时间提前超 30 分钟
+            bool endLater = newE > oldE.AddMinutes(30);               // 结束时间推后超 30 分钟
+            int oldLen = (int)(oldE - oldS).TotalMinutes;
+            int newLen = (int)(newE - newS).TotalMinutes;
+            bool lenGrow = (newLen - oldLen) >= 30;                   // 两端各挪一点但总时长明显增加
+            if (!startEarlier && !endLater && !lenGrow) return true;
+
+            if (usedToday >= 1)
+            {
+                MessageBox.Show(owner,
+                    "【可玩时段】今天已经上调过 1 次。\n\n规则说明：时段每天只能上调 1 次（开始时间提前、结束时间推后、总时长增加都算上调；缩短随时可以）。\n本次调整不会生效；如确需上调，请明天再改。",
+                    "每日上调上限", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Log.Write(string.Format("上调被拒绝：可玩时段 {0:HH:mm}-{1:HH:mm}→{2:HH:mm}-{3:HH:mm}（今日已上调 {4} 次）",
+                    oldS, oldE, newS, newE, usedToday));
+                return false;
+            }
+
+            string detail = "";
+            if (startEarlier) detail += string.Format("· 开始时间提前 {0} 分钟\n", (int)(oldS - newS).TotalMinutes);
+            if (endLater) detail += string.Format("· 结束时间推后 {0} 分钟\n", (int)(newE - oldE).TotalMinutes);
+            if (!startEarlier && !endLater && lenGrow)
+                detail += string.Format("· 总时长增加 {0} 分钟\n", newLen - oldLen);
+            detail += string.Format("· 时段总长 {0} → {1} 分钟", oldLen, newLen);
+
+            var ans = MessageBox.Show(owner,
+                string.Format("你正在扩大可玩时段：\n\n{0}\n上调规则说明：\n· 开始时间提前 / 结束时间推后 / 总时长增加 ≥30 分钟都会弹出本确认\n· 时段每天只能上调 1 次（缩短随时可以）\n· 确认后，时段今天就不能再上调了\n\n确认上调吗？",
+                    detail),
+                "上调确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2);
+            Log.Write(string.Format("上调确认：可玩时段 {0:HH:mm}-{1:HH:mm}→{2:HH:mm}-{3:HH:mm}，用户选择{4}",
+                oldS, oldE, newS, newE, ans == DialogResult.Yes ? "确认" : "取消"));
+            return ans == DialogResult.Yes;
         }
 
         public static void ShowPanel()
@@ -2085,24 +2124,21 @@ namespace GameGuard
 
                 // ---- 上调限制：配额 / 时段 / 连续时长，每个数字每天只能上调 1 次 ----
                 Cfg.EnsureModLimitDate();
-                Func<string, string, int> schedLen = (a, b) =>
-                {
-                    try
-                    {
-                        var da = DateTime.ParseExact("2000-01-01 " + a, "yyyy-MM-dd HH:mm", null);
-                        var db = DateTime.ParseExact("2000-01-01 " + b, "yyyy-MM-dd HH:mm", null);
-                        if (db <= da) db = db.AddDays(1);
-                        return (int)(db - da).TotalMinutes;
-                    }
-                    catch { return 0; }
-                };
                 int oldQuota = Cfg.QuotaMinutes, newQuota = (int)_numQuota.Value;
                 int oldPlay = Cfg.PlayMinutes, newPlay = (int)_numPlay.Value;
-                int oldSched = schedLen(Cfg.ScheduleStart, Cfg.ScheduleEnd), newSched = schedLen(st, en);
+
+                // 时段边缘比较（支持跨零点）：开始提前 / 结束推后 / 总长增加，任一 ≥30 分钟都算上调
+                DateTime oldS, oldE, newS, newE;
+                oldS = DateTime.ParseExact("2000-01-01 " + Cfg.ScheduleStart, "yyyy-MM-dd HH:mm", null);
+                oldE = DateTime.ParseExact("2000-01-01 " + Cfg.ScheduleEnd, "yyyy-MM-dd HH:mm", null);
+                if (oldE <= oldS) oldE = oldE.AddDays(1);
+                newS = DateTime.ParseExact("2000-01-01 " + st, "yyyy-MM-dd HH:mm", null);
+                newE = DateTime.ParseExact("2000-01-01 " + en, "yyyy-MM-dd HH:mm", null);
+                if (newE <= newS) newE = newE.AddDays(1);
 
                 bool okQuota = ApproveUp(form, "每日配额", oldQuota, newQuota, Cfg.QuotaUpCount);
                 bool okPlay = ApproveUp(form, "连续时长", oldPlay, newPlay, Cfg.PlayUpCount);
-                bool okSched = ApproveUp(form, "可玩时段", oldSched, newSched, Cfg.SchedUpCount);
+                bool okSched = ApproveSched(form, oldS, oldE, newS, newE, Cfg.SchedUpCount);
                 if (!okQuota) _numQuota.Value = oldQuota;
                 if (!okPlay) _numPlay.Value = oldPlay;
                 if (!okSched)
@@ -2118,7 +2154,7 @@ namespace GameGuard
                 }
                 if (newQuota > oldQuota && okQuota) Cfg.QuotaUpCount++;
                 if (newPlay > oldPlay && okPlay) Cfg.PlayUpCount++;
-                if (newSched > oldSched && okSched) Cfg.SchedUpCount++;
+                if (okSched && (newS < oldS || newE > oldE)) Cfg.SchedUpCount++;   // 任一边缘扩大才计数
 
                 Cfg.ScheduleStart = st;
                 Cfg.ScheduleEnd = en;
