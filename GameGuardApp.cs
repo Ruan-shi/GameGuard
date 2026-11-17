@@ -1399,6 +1399,67 @@ namespace GameGuard
             return saved;
         }
 
+        // ---------- 退出冷静期确认（防冲动退出）----------
+        // 确认按钮在 30 秒倒计时结束前不可点；取消随时可点
+        public static bool ShowExitConfirm()
+        {
+            bool confirmed = false;
+
+            var form = Ui.MakeForm("退出游戏时长守卫", 400, 232, false);
+            Ui.AddTopBar(form, 400);
+
+            var lblMsg = Ui.MakeLabel("退出后本次开机内不再有任何管控。\n（下次开机仍会自动启动）",
+                20, 28, 360, 58, 10, false, Ui.TextDark, "MiddleLeft");
+            var lblCount = Ui.MakeLabel("为避免冲动退出，请利用这段时间冷静想想",
+                20, 90, 360, 26, 9, false, Ui.SubText, "MiddleLeft");
+            var line = Ui.MakeLine(20, 126, 360);
+            var btnYes = Ui.MakeButton("请稍候 30 秒", 96, 170, 160, 36, true, 10);
+            btnYes.Enabled = false;
+            var btnCancel = Ui.MakeButton("取消退出", 266, 170, 114, 36, false, 10);
+
+            form.Controls.AddRange(new Control[] { lblMsg, lblCount, line, btnYes, btnCancel });
+
+            int left = 30;
+            var t = new System.Windows.Forms.Timer();
+            t.Interval = 1000;
+            t.Tick += (s, e) =>
+            {
+                left--;
+                if (left > 0)
+                {
+                    btnYes.Text = "还剩 " + left + " 秒";
+                }
+                else
+                {
+                    t.Stop();
+                    btnYes.Text = "确认退出";
+                    btnYes.Enabled = true;
+                    lblCount.Text = "冷静期已过，点「确认退出」才会真正退出";
+                }
+            };
+            t.Start();
+
+            btnCancel.Click += (s, e) =>
+            {
+                Log.Write("冷静期内取消退出，管控继续");
+                form.Close();
+            };
+            btnYes.Click += (s, e) =>
+            {
+                confirmed = true;
+                Log.Write("冷静期结束，用户确认退出");
+                form.Close();
+            };
+            form.FormClosed += (s, e) =>
+            {
+                try { t.Stop(); t.Dispose(); } catch { }
+            };
+
+            form.ShowDialog();
+            form.Dispose();
+            return confirmed;
+        }
+
         // ---------- 管理游戏列表 ----------
         public static void ShowGamesDialog(List<GameEntry> gamesSnapshot)
         {
@@ -1801,11 +1862,7 @@ namespace GameGuard
 
             btnExit.Click += (s, e) =>
             {
-                var ans = MessageBox.Show(form,
-                    "确定要退出游戏时长守卫吗？\n\n退出后本次开机内不再有任何管控。\n（下次开机仍会自动启动）",
-                    "游戏时长守卫", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
-                    MessageBoxDefaultButton.Button2);
-                if (ans != DialogResult.Yes) return;
+                if (!UiDialogs.ShowExitConfirm()) return;
                 Log.Write("用户退出 GameGuard");
                 try { MainForm.Notify.Visible = false; MainForm.Notify.Dispose(); } catch { }
                 Application.Exit();
@@ -2049,11 +2106,7 @@ namespace GameGuard
             };
             itemExit.Click += (s, e) =>
             {
-                var ans = MessageBox.Show(
-                    "确定要退出游戏时长守卫吗？\n\n退出后本次开机内不再有任何管控。\n（下次开机仍会自动启动）",
-                    "游戏时长守卫", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
-                    MessageBoxDefaultButton.Button2);
-                if (ans != DialogResult.Yes) return;
+                if (!UiDialogs.ShowExitConfirm()) return;
                 Log.Write("用户退出 GameGuard");
                 try { Notify.Visible = false; Notify.Dispose(); } catch { }
                 Application.Exit();
