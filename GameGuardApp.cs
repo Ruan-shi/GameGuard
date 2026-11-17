@@ -28,8 +28,8 @@ using System.Reflection;
 [assembly: AssemblyDescription("轻量 Windows 托盘工具：控制游戏时长与可玩时段")]
 [assembly: AssemblyCompany("GameGuard Project")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 namespace GameGuard
 {
@@ -307,6 +307,71 @@ namespace GameGuard
                         DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + msg + Environment.NewLine,
                         Encoding.UTF8);
                 }
+            }
+            catch { }
+        }
+    }
+
+    // ==================== 用量记录（usage.csv，按分钟落盘）====================
+    public static class Usage
+    {
+        private static DateTime? _lastTick = null;
+        private static double _bufSec = 0;      // 未落盘的秒数，满 1 分钟冲刷一次
+
+        private static string CsvPath { get { return Path.Combine(Cfg.ScriptDir, "usage.csv"); } }
+
+        // 每次轮询调用：游戏运行中就累计真实时间差（断档 >120 秒视为睡眠，不计）
+        public static void Record(bool running)
+        {
+            var now = DateTime.Now;
+            string today = now.ToString("yyyy-MM-dd");
+            string gname = GameName();
+
+            if (!running)
+            {
+                FlushBuffer(today, gname);
+                _lastTick = null;
+                return;
+            }
+            if (_lastTick == null) { _lastTick = now; return; }
+            double gap = (now - _lastTick.Value).TotalSeconds;
+            _lastTick = now;
+            if (gap <= 0 || gap > 120) return;
+            _bufSec += gap;
+            if (_bufSec >= 60)
+            {
+                int mins = (int)(_bufSec / 60.0);
+                _bufSec -= mins * 60;
+                AppendRow(today, gname, mins);
+            }
+        }
+
+        // 退出程序前把零头落盘
+        public static void FinalFlush()
+        {
+            FlushBuffer(DateTime.Now.ToString("yyyy-MM-dd"), GameName());
+        }
+
+        private static void FlushBuffer(string today, string gname)
+        {
+            if (_bufSec < 1) return;
+            int mins = (int)Math.Round(_bufSec / 60.0);
+            if (mins > 0) AppendRow(today, gname, mins);
+            _bufSec = 0;
+        }
+
+        private static string GameName()
+        {
+            var g = Engine.GetActiveGame();
+            return g != null ? g.Name : Cfg.GameTitle;
+        }
+
+        private static void AppendRow(string today, string gname, int mins)
+        {
+            try
+            {
+                File.AppendAllText(CsvPath,
+                    today + "," + gname + "," + mins + Environment.NewLine, Encoding.UTF8);
             }
             catch { }
         }
@@ -830,6 +895,9 @@ namespace GameGuard
                 var procs = GetGameProcesses();
                 var sched = GetScheduleState();      // 未启用时段时 State = Disabled
                 bool schedOn = Cfg.UseSchedule;
+
+                // ---- 用量记录：与管控模式无关，只要游戏在跑就记（统计报表数据源）----
+                Usage.Record(procs.Count > 0);
 
                 // ---- 每日配额：启用且游戏运行中即累计（时段内外都算），跨天自动重置 ----
                 if (Cfg.UseQuota)
@@ -1460,6 +1528,114 @@ namespace GameGuard
             return confirmed;
         }
 
+        // ---------- 本周统计 ----------
+        public static void ShowStatsDialog()
+        {
+            // 读 usage.csv（每行：日期,游戏,分钟），聚合出每日与每游戏时长
+            var dayMin = new Dictionary<string, int>();
+            var gameMin = new Dictionary<string, int>();
+            try
+            {
+                string path = Path.Combine(Cfg.ScriptDir, "usage.csv");
+                if (File.Exists(path))
+                {
+                    foreach (var ln in File.ReadAllLines(path, Encoding.UTF8))
+                    {
+                        var seg = ln.Split(',');
+                        if (seg.Length < 3) continue;
+                        int mins;
+                        if (!int.TryParse(seg[2], out mins) || mins <= 0) continue;
+                        string d = seg[0].Trim(), g = seg[1].Trim();
+                        if (!dayMin.ContainsKey(d)) dayMin[d] = 0;
+                        dayMin[d] += mins;
+                        if (!gameMin.ContainsKey(g)) gameMin[g] = 0;
+                        gameMin[g] += mins;
+                    }
+                }
+            }
+            catch { }
+
+            var form = Ui.MakeForm("本周游戏统计", 460, 440, false);
+            Ui.AddTopBar(form, 460);
+
+            var days = new List<string>();
+            for (int i = 6; i >= 0; i--)
+                days.Add(DateTime.Now.AddDays(-i).ToString("yyyy-MM-dd"));
+
+            int weekTotal = 0;
+            int maxMin = 30;
+            foreach (var d in days)
+            {
+                int v = dayMin.ContainsKey(d) ? dayMin[d] : 0;
+                weekTotal += v;
+                if (v > maxMin) maxMin = v;
+            }
+            string[] weekNames = new string[] { "日", "一", "二", "三", "四", "五", "六" };
+            string todayKey = DateTime.Now.ToString("yyyy-MM-dd");
+
+            var lblSummary = Ui.MakeLabel(string.Format(
+                "近 7 天合计 {0} 小时 {1} 分（日均 {2} 分）", weekTotal / 60, weekTotal % 60, weekTotal / 7),
+                20, 22, 420, 24, 10.5, true, Ui.TextDark, "MiddleLeft");
+
+            var pic = new PictureBox();
+            pic.Bounds = new Rectangle(Ui.U(20), Ui.U(54), Ui.U(420), Ui.U(220));
+            pic.BackColor = Color.White;
+            pic.Paint += (s, e) =>
+            {
+                var g2 = e.Graphics;
+                g2.SmoothingMode = SmoothingMode.AntiAlias;
+                int w = pic.ClientSize.Width, h = pic.ClientSize.Height;
+                int baseY = h - 40;
+                int slot = w / 7;
+                int barW = slot - 26;
+                using (var penAxis = new Pen(Ui.Line, 1))
+                    g2.DrawLine(penAxis, 4, baseY, w - 4, baseY);
+                for (int i = 0; i < 7; i++)
+                {
+                    int v = dayMin.ContainsKey(days[i]) ? dayMin[days[i]] : 0;
+                    int x = i * slot + (slot - barW) / 2;
+                    int bh = v <= 0 ? 0 : (int)Math.Max(3.0, (double)v / maxMin * (baseY - 44));
+                    bool isToday = days[i] == todayKey;
+                    var d = DateTime.ParseExact(days[i], "yyyy-MM-dd", null);
+                    if (bh > 0)
+                    {
+                        using (var br = new SolidBrush(isToday ? Ui.Primary : Color.FromArgb(120, 120, 120)))
+                            g2.FillRectangle(br, x, baseY - bh, barW, bh);
+                        string vt = v >= 60 ? (v / 60) + "时" + (v % 60) + "分" : v + "分";
+                        using (var fV = new Font("Microsoft YaHei UI", 7.5f))
+                        using (var brT = new SolidBrush(Ui.TextDark))
+                            g2.DrawString(vt, fV, brT, x - 4, baseY - bh - 15);
+                    }
+                    using (var fD = new Font("Microsoft YaHei UI", 7.5f))
+                    using (var brD = new SolidBrush(isToday ? Ui.Primary : Ui.SubText))
+                        g2.DrawString(d.ToString("M-d") + " 周" + weekNames[(int)d.DayOfWeek],
+                            fD, brD, x - 6, baseY + 4);
+                }
+            };
+            form.Controls.Add(pic);
+
+            // 每个游戏合计
+            var list = new ListBox();
+            list.Bounds = new Rectangle(Ui.U(20), Ui.U(284), Ui.U(420), Ui.U(100));
+            list.Font = new Font("Microsoft YaHei UI", 9);
+            list.BorderStyle = BorderStyle.FixedSingle;
+            var sorted = new List<KeyValuePair<string, int>>(gameMin);
+            sorted.Sort((a, b) => b.Value.CompareTo(a.Value));
+            if (sorted.Count == 0)
+                list.Items.Add("还没有使用记录——游戏运行满 1 分钟后这里会出现数据");
+            foreach (var kv in sorted)
+                list.Items.Add(string.Format("{0}    {1} 小时 {2} 分", kv.Key, kv.Value / 60, kv.Value % 60));
+            form.Controls.Add(list);
+
+            var line = Ui.MakeLine(20, 392, 420);
+            var btnClose = Ui.MakeButton("关闭", 340, 398, 100, 36, false, 10);
+            btnClose.Click += (s, e) => form.Close();
+            form.Controls.AddRange(new Control[] { lblSummary, line, btnClose });
+
+            form.ShowDialog();
+            form.Dispose();
+        }
+
         // ---------- 管理游戏列表 ----------
         public static void ShowGamesDialog(List<GameEntry> gamesSnapshot)
         {
@@ -1710,6 +1886,7 @@ namespace GameGuard
             var btnPause = Ui.MakeButton("暂停 1 小时", 284, 520, 116, 34, false, 10);
             var btnKill = Ui.MakeButton("立即结束游戏", 20, 562, 120, 34, false, 10);
             var btnExit = Ui.MakeButton("退出程序", 152, 562, 100, 34, false, 10);
+            var btnStats = Ui.MakeButton("本周统计", 262, 562, 118, 34, false, 10);
             var line5 = Ui.MakeLine(20, 606, 380);
 
             var lblTip = Ui.MakeLabel("改完点保存生效", 20, 619, 130, 26, 9, false, Ui.SubText, "MiddleLeft");
@@ -1723,7 +1900,7 @@ namespace GameGuard
                 lblMax, numMax, lblUnitMax, cbStackTip, line4,
                 secC, lblQuota, numQuota, lblUnitQuota, lblQWarn, numQWarn, lblUnitQWarn, lblQTip, line6,
                 btnGames, btnTemp, btnPause,
-                btnKill, btnExit, line5, lblTip, btnSave, btnClose });
+                btnKill, btnExit, btnStats, line5, lblTip, btnSave, btnClose });
 
             _panel = form;
             _lblMode = lblMode; _lblGame = lblGame;
@@ -1839,6 +2016,11 @@ namespace GameGuard
             // 快捷操作
             btnGames.Click += (s, e) => { UiDialogs.ShowGamesDialog(Cfg.Games); UpdateState(); };
             btnTemp.Click += (s, e) => { UiDialogs.ShowTempDialog(); UpdateState(); };
+            btnStats.Click += (s, e) =>
+            {
+                try { UiDialogs.ShowStatsDialog(); }
+                catch (Exception ex) { Log.Write("打开统计失败：" + ex.Message); }
+            };
 
             btnPause.Click += (s, e) =>
             {
@@ -1863,6 +2045,7 @@ namespace GameGuard
             btnExit.Click += (s, e) =>
             {
                 if (!UiDialogs.ShowExitConfirm()) return;
+                Usage.FinalFlush();
                 Log.Write("用户退出 GameGuard");
                 try { MainForm.Notify.Visible = false; MainForm.Notify.Dispose(); } catch { }
                 Application.Exit();
@@ -2010,6 +2193,8 @@ namespace GameGuard
             ItemTempClear = new ToolStripMenuItem("清除临时调整");
             menu.Items.Add(ItemTempToday);
             menu.Items.Add(ItemTempClear);
+            var itemStats = new ToolStripMenuItem("本周统计...");
+            menu.Items.Add(itemStats);
             menu.Items.Add(new ToolStripSeparator());
 
             var itemPause = new ToolStripMenuItem("暂停管控（1 小时）");
@@ -2099,6 +2284,11 @@ namespace GameGuard
             };
 
             itemPause.Click += (s, e) => { Engine.PauseOneHour(); };
+            itemStats.Click += (s, e) =>
+            {
+                try { UiDialogs.ShowStatsDialog(); }
+                catch (Exception ex) { Log.Write("打开统计失败：" + ex.Message); }
+            };
             itemKillNow.Click += (s, e) =>
             {
                 foreach (var p in Engine.GetGameProcesses()) { try { p.Kill(); } catch { } }
@@ -2107,6 +2297,7 @@ namespace GameGuard
             itemExit.Click += (s, e) =>
             {
                 if (!UiDialogs.ShowExitConfirm()) return;
+                Usage.FinalFlush();
                 Log.Write("用户退出 GameGuard");
                 try { Notify.Visible = false; Notify.Dispose(); } catch { }
                 Application.Exit();

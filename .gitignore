@@ -9,6 +9,7 @@ _run_marker.txt
 gameguard.log
 config.json
 paused.flag
+usage.csv
 panel_check.png
 *_snap.png
 selftest.png
