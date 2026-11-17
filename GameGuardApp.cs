@@ -89,6 +89,24 @@ namespace GameGuard
         public static string QuotaDate = "";
         public static double QuotaUsedSec = 0;
         public static double QuotaExtraSec = 0;
+        // ---- 上调限制：每个数字每天只能上调 1 次（下调不限），跨天自动重置 ----
+        public static string ModLimitDate = "";
+        public static int QuotaUpCount = 0;    // 当日「每日配额」上调次数
+        public static int SchedUpCount = 0;    // 当日「可玩时段」上调次数
+        public static int PlayUpCount = 0;     // 当日「连续时长」上调次数
+
+        // 日期变化时清零上调计数
+        public static void EnsureModLimitDate()
+        {
+            string today = DateTime.Now.ToString("yyyy-MM-dd");
+            if (ModLimitDate != today)
+            {
+                ModLimitDate = today;
+                QuotaUpCount = 0;
+                SchedUpCount = 0;
+                PlayUpCount = 0;
+            }
+        }
 
         public static string ScriptDir = "";
         public static string LogPath = "";
@@ -149,6 +167,11 @@ namespace GameGuard
                 if (TryGetStr(raw, "quotaDate", out s)) QuotaDate = s;
                 if (TryGetDouble(raw, "quotaUsedSec", out dVal)) QuotaUsedSec = dVal;
                 if (TryGetDouble(raw, "quotaExtraSec", out dVal)) QuotaExtraSec = dVal;
+                if (TryGetStr(raw, "modLimitDate", out s)) ModLimitDate = s;
+                if (TryGetInt(raw, "quotaUpCount", out i)) QuotaUpCount = i;
+                if (TryGetInt(raw, "schedUpCount", out i)) SchedUpCount = i;
+                if (TryGetInt(raw, "playUpCount", out i)) PlayUpCount = i;
+                EnsureModLimitDate();
                 if (TryGetInt(raw, "scheduleWarnMin", out i)) ScheduleWarnMin = i;
                 if (TryGetInt(raw, "outsideCountdown", out i)) OutsideCountdown = i;
                 if (TryGetInt(raw, "playMinutes", out i)) PlayMinutes = i;
@@ -272,6 +295,10 @@ namespace GameGuard
                 root["quotaDate"] = QuotaDate;
                 root["quotaUsedSec"] = QuotaUsedSec;
                 root["quotaExtraSec"] = QuotaExtraSec;
+                root["modLimitDate"] = ModLimitDate;
+                root["quotaUpCount"] = QuotaUpCount;
+                root["schedUpCount"] = SchedUpCount;
+                root["playUpCount"] = PlayUpCount;
                 root["scheduleStart"] = ScheduleStart;
                 root["scheduleEnd"] = ScheduleEnd;
                 root["scheduleWarnMin"] = ScheduleWarnMin;
@@ -1837,6 +1864,35 @@ namespace GameGuard
 
         public static Form Current { get { return _panel; } }
 
+        // 上调审批：delta<=0 或小幅上调直接放行；>=30 分钟弹窗确认；当日已上调过则拒绝
+        // 规则：每个数字每天只能上调 1 次（下调不限）
+        private static bool ApproveUp(Form owner, string name, int oldV, int newV, int usedToday)
+        {
+            int delta = newV - oldV;
+            if (delta <= 0) return true;
+            if (usedToday >= 1)
+            {
+                MessageBox.Show(owner,
+                    string.Format("【{0}】今天已经上调过 1 次。\n\n规则说明：每个数字每天只能上调 1 次（下调随时可以）。\n本次上调不会生效；如确需上调，请明天再改。",
+                        name),
+                    "每日上调上限", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Log.Write(string.Format("上调被拒绝：{0} {1}→{2}（今日已上调 {3} 次）", name, oldV, newV, usedToday));
+                return false;
+            }
+            if (delta >= 30)
+            {
+                var ans = MessageBox.Show(owner,
+                    string.Format("你正在把【{0}】从 {1} 上调到 {2}（+{3} 分钟）。\n\n上调规则说明：\n· 上调幅度 ≥30 分钟会弹出本确认\n· 每个数字每天只能上调 1 次（下调随时可以）\n· 确认后，{0} 今天就不能再上调了\n\n确认上调吗？",
+                        name, oldV, newV, delta),
+                    "上调确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2);
+                Log.Write(string.Format("上调确认：{0} {1}→{2}（+{3}），用户选择{4}",
+                    name, oldV, newV, delta, ans == DialogResult.Yes ? "确认" : "取消"));
+                return ans == DialogResult.Yes;
+            }
+            return true;
+        }
+
         public static void ShowPanel()
         {
             if (_panel != null && !_panel.IsDisposed)
@@ -1902,7 +1958,7 @@ namespace GameGuard
             var numMax = Ui.MakeNumber(294, 348, 74, 0, 10, Cfg.MaxExtend);
             var lblUnitMax = Ui.MakeLabel("次", 374, 351, 26, 26, 9, false, Ui.SubText, "MiddleLeft");
 
-            var cbStackTip = Ui.MakeLabel("三种模式可同时勾选、叠加生效，至少保留一种", 20, 384, 380, 30, 9, false, Ui.SubText, "MiddleLeft");
+            var cbStackTip = Ui.MakeLabel("三种模式可同时勾选、叠加生效，至少保留一种\n上调规则：每个数字每天只能上调 1 次，上调 ≥30 分钟需确认，下调不限", 20, 384, 380, 34, 9, false, Ui.SubText, "MiddleLeft");
             var line4 = Ui.MakeLine(20, 420, 380);
 
             var secC = Ui.MakeLabel("每日配额", 20, 426, 200, 22, 10.5, true, Ui.TextDark, "MiddleLeft");
@@ -2026,6 +2082,44 @@ namespace GameGuard
                     MessageBox.Show(form, "固定时段模式下至少选择一个生效星期。", "游戏时长设置");
                     return;
                 }
+
+                // ---- 上调限制：配额 / 时段 / 连续时长，每个数字每天只能上调 1 次 ----
+                Cfg.EnsureModLimitDate();
+                Func<string, string, int> schedLen = (a, b) =>
+                {
+                    try
+                    {
+                        var da = DateTime.ParseExact("2000-01-01 " + a, "yyyy-MM-dd HH:mm", null);
+                        var db = DateTime.ParseExact("2000-01-01 " + b, "yyyy-MM-dd HH:mm", null);
+                        if (db <= da) db = db.AddDays(1);
+                        return (int)(db - da).TotalMinutes;
+                    }
+                    catch { return 0; }
+                };
+                int oldQuota = Cfg.QuotaMinutes, newQuota = (int)_numQuota.Value;
+                int oldPlay = Cfg.PlayMinutes, newPlay = (int)_numPlay.Value;
+                int oldSched = schedLen(Cfg.ScheduleStart, Cfg.ScheduleEnd), newSched = schedLen(st, en);
+
+                bool okQuota = ApproveUp(form, "每日配额", oldQuota, newQuota, Cfg.QuotaUpCount);
+                bool okPlay = ApproveUp(form, "连续时长", oldPlay, newPlay, Cfg.PlayUpCount);
+                bool okSched = ApproveUp(form, "可玩时段", oldSched, newSched, Cfg.SchedUpCount);
+                if (!okQuota) _numQuota.Value = oldQuota;
+                if (!okPlay) _numPlay.Value = oldPlay;
+                if (!okSched)
+                {
+                    st = Cfg.ScheduleStart;
+                    en = Cfg.ScheduleEnd;
+                    try
+                    {
+                        _dtpStart.Value = DateTime.ParseExact("2000-01-01 " + st, "yyyy-MM-dd HH:mm", null);
+                        _dtpEnd.Value = DateTime.ParseExact("2000-01-01 " + en, "yyyy-MM-dd HH:mm", null);
+                    }
+                    catch { }
+                }
+                if (newQuota > oldQuota && okQuota) Cfg.QuotaUpCount++;
+                if (newPlay > oldPlay && okPlay) Cfg.PlayUpCount++;
+                if (newSched > oldSched && okSched) Cfg.SchedUpCount++;
+
                 Cfg.ScheduleStart = st;
                 Cfg.ScheduleEnd = en;
                 Cfg.ScheduleWarnMin = (int)_numWarn.Value;
@@ -2039,9 +2133,10 @@ namespace GameGuard
                 Cfg.Save();
                 MainForm.UpdateTrayMenuText();
                 Log.Write(string.Format(
-                    "面板保存设置：时段 {0}-{1}，预警 {2} 分，连续 {3} 分，续期 {4} 分×{5} 次，配额 {6} 分/天，星期 {7}",
+                    "面板保存设置：时段 {0}-{1}，预警 {2} 分，连续 {3} 分，续期 {4} 分×{5} 次，配额 {6} 分/天，星期 {7}（今日上调：配额 {8} 次/时段 {9} 次/连续 {10} 次）",
                     st, en, Cfg.ScheduleWarnMin, Cfg.PlayMinutes, Cfg.ExtendMinutes, Cfg.MaxExtend,
-                    Cfg.QuotaMinutes, string.Join(",", days)));
+                    Cfg.QuotaMinutes, string.Join(",", days),
+                    Cfg.QuotaUpCount, Cfg.SchedUpCount, Cfg.PlayUpCount));
                 UpdateState();
                 _lblTip.Text = "已保存 ✓";
                 _lblTip.ForeColor = Ui.Green;
