@@ -6,7 +6,10 @@
       "pathFilter": [ "PBZ" ]
     }
   ],
+  "mode": 0,
   "useSchedule": true,
+  "quotaMinutes": 120,
+  "quotaWarnMin": 10,
   "scheduleStart": "20:00",
   "scheduleEnd": "22:30",
   "scheduleWarnMin": 3,

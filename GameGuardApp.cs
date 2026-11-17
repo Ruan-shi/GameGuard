@@ -28,8 +28,8 @@ using System.Reflection;
 [assembly: AssemblyDescription("轻量 Windows 托盘工具：控制游戏时长与可玩时段")]
 [assembly: AssemblyCompany("GameGuard Project")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace GameGuard
 {
@@ -58,7 +58,10 @@ namespace GameGuard
         public static int PopupTimeoutSec = 60;
         public static int PollSeconds = 15;
         public static string GameTitle = "游戏";
-        public static bool UseSchedule = true;
+        // 模式：0=固定时段 1=连续时长 2=每日配额（useSchedule 为旧字段，保留兼容）
+        public static int Mode = 0;
+        public static bool UseSchedule { get { return Mode == 0; } }
+        public static string ModeName { get { return Mode == 0 ? "固定时段" : (Mode == 1 ? "连续时长" : "每日配额"); } }
         public static string ScheduleStart = "18:00";
         public static string ScheduleEnd = "20:00";
         public static int ScheduleWarnMin = 3;
@@ -68,6 +71,14 @@ namespace GameGuard
         public static string TempDate = "";
         public static string TempStart = "";
         public static string TempEnd = "";
+        // ---- 每日配额（模式 2）----
+        public static int QuotaMinutes = 120;      // 每日累计可玩分钟
+        public static int QuotaWarnMin = 10;       // 临近用完预警（分钟）
+        public static int TempQuotaMin = 0;        // 今天的临时配额覆盖（0=不覆盖）
+        // 配额运行状态：持久化，防止重启绕过
+        public static string QuotaDate = "";
+        public static double QuotaUsedSec = 0;
+        public static double QuotaExtraSec = 0;
 
         public static string ScriptDir = "";
         public static string LogPath = "";
@@ -91,8 +102,16 @@ namespace GameGuard
                 bool b;
                 int i;
                 string s;
+                double dVal;
 
-                if (TryGetBool(raw, "useSchedule", out b)) UseSchedule = b;
+                if (TryGetInt(raw, "mode", out i)) Mode = (i >= 0 && i <= 2) ? i : 0;
+                else if (TryGetBool(raw, "useSchedule", out b)) Mode = b ? 0 : 1;   // 旧配置兼容
+                if (TryGetInt(raw, "quotaMinutes", out i)) QuotaMinutes = i;
+                if (TryGetInt(raw, "quotaWarnMin", out i)) QuotaWarnMin = i;
+                if (TryGetInt(raw, "tempQuotaMin", out i)) TempQuotaMin = i;
+                if (TryGetStr(raw, "quotaDate", out s)) QuotaDate = s;
+                if (TryGetDouble(raw, "quotaUsedSec", out dVal)) QuotaUsedSec = dVal;
+                if (TryGetDouble(raw, "quotaExtraSec", out dVal)) QuotaExtraSec = dVal;
                 if (TryGetBool(raw, "scheduleWithContinuous", out b)) ScheduleWithContinuous = b;
                 if (TryGetInt(raw, "scheduleWarnMin", out i)) ScheduleWarnMin = i;
                 if (TryGetInt(raw, "outsideCountdown", out i)) OutsideCountdown = i;
@@ -132,7 +151,7 @@ namespace GameGuard
                     if (loaded.Count > 0) Games = loaded;
                 }
 
-                Log.Write("已加载 config.json，当前模式：" + (UseSchedule ? "固定时段" : "连续时长"));
+                Log.Write("已加载 config.json，当前模式：" + ModeName);
             }
             catch (Exception ex)
             {
@@ -174,6 +193,14 @@ namespace GameGuard
             catch { return false; }
         }
 
+        private static bool TryGetDouble(Dictionary<string, object> d, string key, out double val)
+        {
+            val = 0; object v;
+            if (!d.TryGetValue(key, out v) || v == null) return false;
+            try { val = Convert.ToDouble(v); return true; }
+            catch { return false; }
+        }
+
         private static bool TryGetStr(Dictionary<string, object> d, string key, out string val)
         {
             val = null; object v;
@@ -198,7 +225,14 @@ namespace GameGuard
                 }
                 var root = new Dictionary<string, object>();
                 root["games"] = games;
-                root["useSchedule"] = UseSchedule;
+                root["mode"] = Mode;
+                root["useSchedule"] = UseSchedule;   // 旧字段兼容
+                root["quotaMinutes"] = QuotaMinutes;
+                root["quotaWarnMin"] = QuotaWarnMin;
+                root["tempQuotaMin"] = TempQuotaMin;
+                root["quotaDate"] = QuotaDate;
+                root["quotaUsedSec"] = QuotaUsedSec;
+                root["quotaExtraSec"] = QuotaExtraSec;
                 root["scheduleStart"] = ScheduleStart;
                 root["scheduleEnd"] = ScheduleEnd;
                 root["scheduleWarnMin"] = ScheduleWarnMin;
@@ -461,6 +495,9 @@ namespace GameGuard
         public static DateTime? RoundStart = null;
         public static int ExtendUsed = 0;
         public static string WarnKey = null;
+        // ---- 每日配额运行时状态 ----
+        public static DateTime? QuotaLastTick = null;   // 上次计费时刻
+        public static string QuotaWarnKey = null;       // 预警去重（每天一次）
         private static bool _inPoll = false;
 
         public class SchedState
@@ -703,6 +740,34 @@ namespace GameGuard
             }
         }
 
+        // ---------- 每日配额辅助 ----------
+        // 今日配额总额（分钟）：临时覆盖优先，其次常规配置
+        public static int QuotaTotalMin()
+        {
+            string today = DateTime.Now.ToString("yyyy-MM-dd");
+            if (Cfg.TempDate == today && Cfg.TempQuotaMin > 0) return Cfg.TempQuotaMin;
+            return Cfg.QuotaMinutes;
+        }
+
+        // 今日剩余秒数 = 总额 + 续期追加 - 已消耗
+        public static double QuotaRemainSec()
+        {
+            return QuotaTotalMin() * 60.0 + Cfg.QuotaExtraSec - Cfg.QuotaUsedSec;
+        }
+
+        // 跨天重置：清零并持久化
+        private static void QuotaDailyReset(string today)
+        {
+            Cfg.QuotaDate = today;
+            Cfg.QuotaUsedSec = 0;
+            Cfg.QuotaExtraSec = 0;
+            ExtendUsed = 0;
+            QuotaWarnKey = null;
+            QuotaLastTick = null;
+            Cfg.Save();
+            Log.Write("每日配额已重置（" + today + "）");
+        }
+
         // ---------- 主轮询（托盘 Timer 驱动，UI 线程）----------
         public static void Poll(ToolStripItem statusItem)
         {
@@ -721,7 +786,11 @@ namespace GameGuard
                 var procs = GetGameProcesses();
                 var sched = GetScheduleState();
 
-                if (Cfg.UseSchedule)
+                if (Cfg.Mode == 2)
+                {
+                    PollQuota(procs, statusItem);
+                }
+                else if (Cfg.UseSchedule)
                 {
                     // ============ 固定时段模式 ============
                     if (sched.State == "Inside")
@@ -860,6 +929,96 @@ namespace GameGuard
             finally
             {
                 _inPoll = false;
+            }
+        }
+
+        // ---------- 每日配额轮询分支 ----------
+        private static void PollQuota(List<System.Diagnostics.Process> procs, ToolStripItem statusItem)
+        {
+            string today = DateTime.Now.ToString("yyyy-MM-dd");
+            if (Cfg.QuotaDate != today)
+                QuotaDailyReset(today);
+
+            // 游戏进程存在才计费；用两次轮询的真实时间差累计
+            if (procs.Count > 0)
+            {
+                if (QuotaLastTick == null)
+                {
+                    QuotaLastTick = DateTime.Now;   // 刚启动，不补计
+                }
+                else
+                {
+                    double gap = (DateTime.Now - QuotaLastTick.Value).TotalSeconds;
+                    if (gap > 0 && gap <= 120)      // 断档 >120 秒视为睡眠/恢复，不计费
+                        Cfg.QuotaUsedSec += gap;
+                    QuotaLastTick = DateTime.Now;
+                }
+            }
+            else
+            {
+                QuotaLastTick = null;               // 游戏退出即停止累计
+            }
+
+            double remainSec = QuotaRemainSec();
+            int remainMin = (int)Math.Floor(remainSec / 60.0);
+            int usedMin = (int)Math.Floor(Cfg.QuotaUsedSec / 60.0);
+            int totalMin = QuotaTotalMin() + (int)Math.Floor(Cfg.QuotaExtraSec / 60.0);
+
+            if (remainSec <= 0)
+            {
+                if (procs.Count > 0)
+                    QuotaExhausted();
+                statusItem.Text = "状态：今日配额已用完";
+                return;
+            }
+
+            // 临近用完预警：每天只弹一次
+            if (procs.Count > 0 && remainSec <= Cfg.QuotaWarnMin * 60 && QuotaWarnKey != today)
+            {
+                QuotaWarnKey = today;
+                Log.Write(string.Format("今日配额仅剩约 {0} 分钟，弹出预警", remainMin));
+                UiDialogs.ShowNotice("今日游戏时间即将用完",
+                    string.Format("剩余约 {0} 分钟", remainMin),
+                    "每日配额：" + QuotaTotalMin() + " 分钟" +
+                        (Cfg.TempDate == today && Cfg.TempQuotaMin > 0 ? "（今日临时调整）" : ""),
+                    10, "提示将在 {0} 秒后自动关闭");
+            }
+
+            statusItem.Text = procs.Count > 0
+                ? string.Format("状态：游玩中，今日剩 {0} 分", remainMin)
+                : string.Format("状态：今日已用 {0} 分 / {1} 分", usedMin, totalMin);
+        }
+
+        // 配额耗尽：复用守护对话框（结束 / 再玩 N 分钟），续期按天计数
+        private static void QuotaExhausted()
+        {
+            var procs = GetGameProcesses();
+            if (procs.Count == 0) return;
+
+            int usedMin = (int)Math.Floor(Cfg.QuotaUsedSec / 60.0);
+            int remainExtend = Math.Max(0, Cfg.MaxExtend - ExtendUsed);
+            var activeGame = GetActiveGame();
+            string gname = activeGame != null ? activeGame.Name : Cfg.GameTitle;
+
+            Log.Write(string.Format("今日配额已用完（已玩 {0} 分钟），弹出提醒，剩余续期 {1} 次",
+                usedMin, remainExtend));
+            string choice = UiDialogs.ShowGuardDialog(usedMin, remainExtend, gname);
+
+            if (choice == "extend")
+            {
+                ExtendUsed++;
+                Cfg.QuotaExtraSec += Cfg.ExtendMinutes * 60;
+                QuotaLastTick = DateTime.Now;
+                Cfg.Save();
+                int left = Math.Max(0, Cfg.MaxExtend - ExtendUsed);
+                Log.Write(string.Format("配额续期 {0} 分钟，剩余 {1} 次",
+                    Cfg.ExtendMinutes, left));
+            }
+            else
+            {
+                Log.Write("结束游戏，原因：" + (choice == "kill" ? "配额用完，用户选择" : "配额用完，弹窗超时未响应"));
+                foreach (var p in procs) { try { p.Kill(); } catch { } }
+                QuotaLastTick = null;
             }
         }
     }
@@ -1179,18 +1338,22 @@ namespace GameGuard
                 baseEnd = Cfg.TempEnd;
             }
 
-            var form = Ui.MakeForm("临时调整今天", 400, 182, false);
+            var form = Ui.MakeForm("临时调整今天", 400, 224, false);
             Ui.AddTopBar(form, 400);
 
             var lbl1 = Ui.MakeLabel("开始时间", 20, 59, 64, 26, 10, false, Ui.TextDark, "MiddleRight");
             var dtpStart = Ui.MakeTimePicker(90, 56, 104, baseStart);
             var lbl2 = Ui.MakeLabel("结束时间", 204, 59, 68, 26, 10, false, Ui.TextDark, "MiddleRight");
             var dtpEnd = Ui.MakeTimePicker(276, 56, 104, baseEnd);
+            var lblQuota = Ui.MakeLabel("今日配额", 20, 95, 64, 26, 10, false, Ui.TextDark, "MiddleRight");
+            var numQuota = Ui.MakeNumber(90, 92, 74, 0, 1440, Cfg.TempQuotaMin);
+            var lblUnitQ = Ui.MakeLabel("分钟", 170, 95, 40, 26, 9, false, Ui.SubText, "MiddleLeft");
+            var lblQTip = Ui.MakeLabel("0 = 不调整配额（只调时段）", 216, 95, 170, 26, 9, false, Ui.SubText, "MiddleLeft");
             var lblTip = Ui.MakeLabel("仅对今天生效，明天自动恢复常规时段", 20, 22, 360, 22, 9, false, Ui.SubText, "MiddleLeft");
-            var btnSave = Ui.MakeButton("今天就这样", 152, 126, 116, 36, true, 10);
-            var btnCancel = Ui.MakeButton("取消", 280, 126, 100, 36, false, 10);
+            var btnSave = Ui.MakeButton("今天就这样", 152, 164, 116, 36, true, 10);
+            var btnCancel = Ui.MakeButton("取消", 280, 164, 100, 36, false, 10);
 
-            form.Controls.AddRange(new Control[] { lbl1, dtpStart, lbl2, dtpEnd, lblTip, btnSave, btnCancel });
+            form.Controls.AddRange(new Control[] { lbl1, dtpStart, lbl2, dtpEnd, lblQuota, numQuota, lblUnitQ, lblQTip, lblTip, btnSave, btnCancel });
 
             btnCancel.Click += (s, e) => form.Close();
             btnSave.Click += (s, e) =>
@@ -1205,11 +1368,13 @@ namespace GameGuard
                 Cfg.TempDate = DateTime.Now.ToString("yyyy-MM-dd");
                 Cfg.TempStart = st;
                 Cfg.TempEnd = en;
+                Cfg.TempQuotaMin = (int)numQuota.Value;
                 Engine.WarnKey = null;
                 saved = true;
                 Cfg.Save();
                 MainForm.UpdateTrayMenuText();
-                Log.Write(string.Format("临时调整今天：{0} - {1}（仅今日生效）", st, en));
+                Log.Write(string.Format("临时调整今天：{0} - {1}，配额 {2}（仅今日生效）",
+                    st, en, Cfg.TempQuotaMin > 0 ? Cfg.TempQuotaMin + " 分钟" : "不调整"));
                 form.Close();
             };
 
@@ -1305,9 +1470,10 @@ namespace GameGuard
     {
         private static Form _panel = null;
         private static Label _lblMode, _lblGame, _lblTip;
-        private static RadioButton _rbSched, _rbCont;
+        private static RadioButton _rbSched, _rbCont, _rbQuota;
         private static DateTimePicker _dtpStart, _dtpEnd;
         private static NumericUpDown _numWarn, _numPlay, _numExtend, _numMax;
+        private static NumericUpDown _numQuota, _numQWarn;
         private static CheckBox _cbCont;
         private static CheckBox[] _dayChecks;
         private static Button _btnPause;
@@ -1317,7 +1483,16 @@ namespace GameGuard
         public static string[] GetStatusLines()
         {
             string modeText;
-            if (Cfg.UseSchedule)
+            if (Cfg.Mode == 2)
+            {
+                int usedMin = (int)Math.Floor(Cfg.QuotaUsedSec / 60.0);
+                int totalMin = Engine.QuotaTotalMin() + (int)Math.Floor(Cfg.QuotaExtraSec / 60.0);
+                int remainMin = (int)Math.Ceiling(Engine.QuotaRemainSec() / 60.0);
+                if (remainMin < 0) remainMin = 0;
+                modeText = string.Format("模式：每日配额 {0} 分钟（已用 {1} 分，剩 {2} 分）",
+                    Engine.QuotaTotalMin(), usedMin, remainMin);
+            }
+            else if (Cfg.UseSchedule)
                 modeText = string.Format("模式：固定时段 {0} - {1}", Cfg.ScheduleStart, Cfg.ScheduleEnd);
             else
                 modeText = string.Format("模式：连续时长 {0} 分钟/轮，可续 {1} 次", Cfg.PlayMinutes, Cfg.MaxExtend);
@@ -1325,6 +1500,8 @@ namespace GameGuard
             string todayKey = DateTime.Now.ToString("yyyy-MM-dd");
             if (Cfg.TempDate == todayKey && !string.IsNullOrEmpty(Cfg.TempStart) && !string.IsNullOrEmpty(Cfg.TempEnd))
                 modeText += string.Format("  |  今日临时 {0}-{1}", Cfg.TempStart, Cfg.TempEnd);
+            if (Cfg.TempDate == todayKey && Cfg.TempQuotaMin > 0)
+                modeText += string.Format("  |  今日配额 {0} 分", Cfg.TempQuotaMin);
             if (Engine.GetPausedState()) modeText += "  |  已暂停";
 
             string gameText;
@@ -1361,8 +1538,9 @@ namespace GameGuard
                 _lblMode.Text = st[0];
                 _lblGame.Text = st[1];
                 _radioGuard = true;
-                _rbSched.Checked = Cfg.UseSchedule;
-                _rbCont.Checked = !Cfg.UseSchedule;
+                _rbSched.Checked = (Cfg.Mode == 0);
+                _rbCont.Checked = (Cfg.Mode == 1);
+                _rbQuota.Checked = (Cfg.Mode == 2);
                 _radioGuard = false;
                 _btnPause.Text = Engine.GetPausedState() ? "恢复管控" : "暂停 1 小时";
             }
@@ -1385,7 +1563,7 @@ namespace GameGuard
                 catch { }
             }
 
-            var form = Ui.MakeForm("游戏时长守卫", 420, 576, false);
+            var form = Ui.MakeForm("游戏时长守卫", 420, 648, false);
             form.TopMost = false;
             Ui.AddTopBar(form, 420);
 
@@ -1395,7 +1573,8 @@ namespace GameGuard
             var line1 = Ui.MakeLine(20, 92, 380);
 
             var rbSched = Ui.MakeRadio("固定时段", 20, 100, 110, 28, Cfg.UseSchedule);
-            var rbCont = Ui.MakeRadio("连续时长", 140, 100, 120, 28, !Cfg.UseSchedule);
+            var rbCont = Ui.MakeRadio("连续时长", 140, 100, 120, 28, Cfg.Mode == 1);
+            var rbQuota = Ui.MakeRadio("每日配额", 270, 100, 110, 28, Cfg.Mode == 2);
             var line2 = Ui.MakeLine(20, 136, 380);
 
             var secA = Ui.MakeLabel("可玩时段", 20, 142, 200, 22, 10.5, true, Ui.TextDark, "MiddleLeft");
@@ -1438,30 +1617,44 @@ namespace GameGuard
             var cbCont = Ui.MakeCheck("时段内同时启用连续时长限制", 20, 384, 320, 30, Cfg.ScheduleWithContinuous);
             var line4 = Ui.MakeLine(20, 420, 380);
 
-            var btnGames = Ui.MakeButton("管理游戏列表", 20, 428, 120, 34, false, 10);
-            var btnTemp = Ui.MakeButton("临时调整今天", 152, 428, 120, 34, false, 10);
-            var btnPause = Ui.MakeButton("暂停 1 小时", 284, 428, 116, 34, false, 10);
-            var btnKill = Ui.MakeButton("立即结束游戏", 20, 470, 120, 34, false, 10);
-            var btnExit = Ui.MakeButton("退出程序", 152, 470, 100, 34, false, 10);
-            var line5 = Ui.MakeLine(20, 514, 380);
+            var secC = Ui.MakeLabel("每日配额", 20, 426, 200, 22, 10.5, true, Ui.TextDark, "MiddleLeft");
 
-            var lblTip = Ui.MakeLabel("改完点保存生效", 20, 527, 130, 26, 9, false, Ui.SubText, "MiddleLeft");
-            var btnSave = Ui.MakeButton("保存设置", 168, 522, 120, 36, true, 10);
-            var btnClose = Ui.MakeButton("关闭", 300, 522, 100, 36, false, 10);
+            var lblQuota = Ui.MakeLabel("每日配额", 20, 455, 78, 26, 10, false, Ui.TextDark, "MiddleRight");
+            var numQuota = Ui.MakeNumber(104, 452, 74, 5, 1440, Cfg.QuotaMinutes);
+            var lblUnitQuota = Ui.MakeLabel("分钟", 184, 455, 40, 26, 9, false, Ui.SubText, "MiddleLeft");
+            var lblQWarn = Ui.MakeLabel("预警", 240, 455, 48, 26, 10, false, Ui.TextDark, "MiddleRight");
+            var numQWarn = Ui.MakeNumber(294, 452, 74, 1, 120, Cfg.QuotaWarnMin);
+            var lblUnitQWarn = Ui.MakeLabel("分钟", 374, 455, 40, 26, 9, false, Ui.SubText, "MiddleLeft");
+            var lblQTip = Ui.MakeLabel("当天累计玩满即结束，续期沿用上面的续期设置", 20, 488, 380, 22, 9, false, Ui.SubText, "MiddleLeft");
+            var line6 = Ui.MakeLine(20, 512, 380);
+
+            var btnGames = Ui.MakeButton("管理游戏列表", 20, 520, 120, 34, false, 10);
+            var btnTemp = Ui.MakeButton("临时调整今天", 152, 520, 120, 34, false, 10);
+            var btnPause = Ui.MakeButton("暂停 1 小时", 284, 520, 116, 34, false, 10);
+            var btnKill = Ui.MakeButton("立即结束游戏", 20, 562, 120, 34, false, 10);
+            var btnExit = Ui.MakeButton("退出程序", 152, 562, 100, 34, false, 10);
+            var line5 = Ui.MakeLine(20, 606, 380);
+
+            var lblTip = Ui.MakeLabel("改完点保存生效", 20, 619, 130, 26, 9, false, Ui.SubText, "MiddleLeft");
+            var btnSave = Ui.MakeButton("保存设置", 168, 614, 120, 36, true, 10);
+            var btnClose = Ui.MakeButton("关闭", 300, 614, 100, 36, false, 10);
 
             form.Controls.AddRange(new Control[] {
-                lblTitle, lblMode, lblGame, line1, rbSched, rbCont, line2,
+                lblTitle, lblMode, lblGame, line1, rbSched, rbCont, rbQuota, line2,
                 secA, lbl1, dtpStart, lbl2, dtpEnd, lbl3, numWarn, lblUnitWarn, lbl5,
                 line3, secB, lblPlay, numPlay, lblUnitPlay, lblExt, numExtend, lblUnitExt,
-                lblMax, numMax, lblUnitMax, cbCont, line4, btnGames, btnTemp, btnPause,
+                lblMax, numMax, lblUnitMax, cbCont, line4,
+                secC, lblQuota, numQuota, lblUnitQuota, lblQWarn, numQWarn, lblUnitQWarn, lblQTip, line6,
+                btnGames, btnTemp, btnPause,
                 btnKill, btnExit, line5, lblTip, btnSave, btnClose });
 
             _panel = form;
             _lblMode = lblMode; _lblGame = lblGame;
-            _rbSched = rbSched; _rbCont = rbCont;
+            _rbSched = rbSched; _rbCont = rbCont; _rbQuota = rbQuota;
             _dtpStart = dtpStart; _dtpEnd = dtpEnd;
             _numWarn = numWarn; _numPlay = numPlay;
             _numExtend = numExtend; _numMax = numMax;
+            _numQuota = numQuota; _numQWarn = numQWarn;
             _cbCont = cbCont; _dayChecks = dayChecks;
             _btnPause = btnPause; _lblTip = lblTip;
 
@@ -1471,7 +1664,7 @@ namespace GameGuard
             {
                 if (_radioGuard || !rbSched.Checked) return;
                 _radioGuard = true;
-                Cfg.UseSchedule = true;
+                Cfg.Mode = 0;
                 Engine.DueTime = null; Engine.RoundStart = null;
                 Engine.ExtendUsed = 0; Engine.WarnKey = null;
                 Cfg.Save();
@@ -1484,12 +1677,25 @@ namespace GameGuard
             {
                 if (_radioGuard || !rbCont.Checked) return;
                 _radioGuard = true;
-                Cfg.UseSchedule = false;
+                Cfg.Mode = 1;
                 Engine.DueTime = null; Engine.RoundStart = null;
                 Engine.ExtendUsed = 0; Engine.WarnKey = null;
                 Cfg.Save();
                 MainForm.UpdateTrayMenuText();
                 Log.Write("切换模式：连续时长（" + Cfg.PlayMinutes + " 分钟 + 续期 " + Cfg.MaxExtend + " 次）");
+                _radioGuard = false;
+                UpdateState();
+            };
+            rbQuota.CheckedChanged += (s, e) =>
+            {
+                if (_radioGuard || !rbQuota.Checked) return;
+                _radioGuard = true;
+                Cfg.Mode = 2;
+                Engine.DueTime = null; Engine.RoundStart = null;
+                Engine.ExtendUsed = 0; Engine.WarnKey = null;
+                Cfg.Save();
+                MainForm.UpdateTrayMenuText();
+                Log.Write("切换模式：每日配额（" + Cfg.QuotaMinutes + " 分钟/天，续期 " + Cfg.MaxExtend + " 次）");
                 _radioGuard = false;
                 UpdateState();
             };
@@ -1521,13 +1727,15 @@ namespace GameGuard
                 Cfg.PlayMinutes = (int)_numPlay.Value;
                 Cfg.ExtendMinutes = (int)_numExtend.Value;
                 Cfg.MaxExtend = (int)_numMax.Value;
+                Cfg.QuotaMinutes = (int)_numQuota.Value;
+                Cfg.QuotaWarnMin = (int)_numQWarn.Value;
                 Engine.WarnKey = null;
                 Cfg.Save();
                 MainForm.UpdateTrayMenuText();
                 Log.Write(string.Format(
-                    "面板保存设置：时段 {0}-{1}，预警 {2} 分，连续 {3} 分，续期 {4} 分×{5} 次，星期 {6}",
+                    "面板保存设置：时段 {0}-{1}，预警 {2} 分，连续 {3} 分，续期 {4} 分×{5} 次，配额 {6} 分/天，星期 {7}",
                     st, en, Cfg.ScheduleWarnMin, Cfg.PlayMinutes, Cfg.ExtendMinutes, Cfg.MaxExtend,
-                    string.Join(",", days)));
+                    Cfg.QuotaMinutes, string.Join(",", days)));
                 UpdateState();
                 _lblTip.Text = "已保存 ✓";
                 _lblTip.ForeColor = Ui.Green;
@@ -1610,14 +1818,17 @@ namespace GameGuard
         public static ToolStripMenuItem ItemStatus;
         public static ToolStripMenuItem ItemModeSched;
         public static ToolStripMenuItem ItemModeCont;
+        public static ToolStripMenuItem ItemModeQuota;
         public static ToolStripMenuItem ItemTempToday;
         public static ToolStripMenuItem ItemTempClear;
 
         public static void UpdateTrayMenuText()
         {
             ItemModeSched.Text = string.Format("固定时段（{0} - {1}）", Cfg.ScheduleStart, Cfg.ScheduleEnd);
-            ItemModeSched.Checked = Cfg.UseSchedule;
-            ItemModeCont.Checked = !Cfg.UseSchedule;
+            ItemModeSched.Checked = (Cfg.Mode == 0);
+            ItemModeCont.Checked = (Cfg.Mode == 1);
+            ItemModeQuota.Text = string.Format("每日配额（{0} 分钟/天）", Cfg.QuotaMinutes);
+            ItemModeQuota.Checked = (Cfg.Mode == 2);
 
             string todayKey = DateTime.Now.ToString("yyyy-MM-dd");
             if (Cfg.TempDate == todayKey && !string.IsNullOrEmpty(Cfg.TempStart) && !string.IsNullOrEmpty(Cfg.TempEnd))
@@ -1633,7 +1844,7 @@ namespace GameGuard
 
             try
             {
-                Notify.Text = Cfg.UseSchedule ? "游戏时长守卫（固定时段）" : "游戏时长守卫（连续时长）";
+                Notify.Text = "游戏时长守卫（" + Cfg.ModeName + "）";
             }
             catch { }
         }
@@ -1666,10 +1877,14 @@ namespace GameGuard
                 Notify.Text = "游戏时长守卫（运行中）";
                 Notify.Visible = true;
                 Log.Write("托盘图标已创建");
-                string tipText = Cfg.UseSchedule
-                    ? string.Format("可玩时段 {0} - {1}，结束前 {2} 分钟预警。左键点击图标打开控制面板。",
-                        Cfg.ScheduleStart, Cfg.ScheduleEnd, Cfg.ScheduleWarnMin)
-                    : string.Format("连续游玩 {0} 分钟会提醒你。左键点击图标打开控制面板。", Cfg.PlayMinutes);
+                string tipText;
+                if (Cfg.Mode == 0)
+                    tipText = string.Format("可玩时段 {0} - {1}，结束前 {2} 分钟预警。左键点击图标打开控制面板。",
+                        Cfg.ScheduleStart, Cfg.ScheduleEnd, Cfg.ScheduleWarnMin);
+                else if (Cfg.Mode == 1)
+                    tipText = string.Format("连续游玩 {0} 分钟会提醒你。左键点击图标打开控制面板。", Cfg.PlayMinutes);
+                else
+                    tipText = string.Format("每天最多玩 {0} 分钟。左键点击图标打开控制面板。", Cfg.QuotaMinutes);
                 Notify.ShowBalloonTip(4000, "游戏时长守卫已启动", tipText, ToolTipIcon.Info);
             }
             catch (Exception ex)
@@ -1691,10 +1906,13 @@ namespace GameGuard
             var menuMode = new ToolStripMenuItem("切换模式");
             ItemModeSched = new ToolStripMenuItem("固定时段");
             ItemModeCont = new ToolStripMenuItem("连续时长（60 分钟 + 续期）");
+            ItemModeQuota = new ToolStripMenuItem("每日配额（120 分钟/天）");
             ItemModeSched.CheckOnClick = false;
             ItemModeCont.CheckOnClick = false;
+            ItemModeQuota.CheckOnClick = false;
             menuMode.DropDownItems.Add(ItemModeSched);
             menuMode.DropDownItems.Add(ItemModeCont);
+            menuMode.DropDownItems.Add(ItemModeQuota);
             menu.Items.Add(menuMode);
 
             ItemTempToday = new ToolStripMenuItem("临时调整今天...");
@@ -1733,8 +1951,8 @@ namespace GameGuard
 
             ItemModeSched.Click += (s, e) =>
             {
-                if (Cfg.UseSchedule) return;
-                Cfg.UseSchedule = true;
+                if (Cfg.Mode == 0) return;
+                Cfg.Mode = 0;
                 Engine.DueTime = null; Engine.RoundStart = null;
                 Engine.ExtendUsed = 0; Engine.WarnKey = null;
                 Cfg.Save();
@@ -1743,19 +1961,30 @@ namespace GameGuard
             };
             ItemModeCont.Click += (s, e) =>
             {
-                if (!Cfg.UseSchedule) return;
-                Cfg.UseSchedule = false;
+                if (Cfg.Mode == 1) return;
+                Cfg.Mode = 1;
                 Engine.DueTime = null; Engine.RoundStart = null;
                 Engine.ExtendUsed = 0; Engine.WarnKey = null;
                 Cfg.Save();
                 UpdateTrayMenuText();
                 Log.Write("切换模式：连续时长（" + Cfg.PlayMinutes + " 分钟 + 续期 " + Cfg.MaxExtend + " 次）");
             };
+            ItemModeQuota.Click += (s, e) =>
+            {
+                if (Cfg.Mode == 2) return;
+                Cfg.Mode = 2;
+                Engine.DueTime = null; Engine.RoundStart = null;
+                Engine.ExtendUsed = 0; Engine.WarnKey = null;
+                Cfg.Save();
+                UpdateTrayMenuText();
+                Log.Write("切换模式：每日配额（" + Cfg.QuotaMinutes + " 分钟/天，续期 " + Cfg.MaxExtend + " 次）");
+            };
 
             ItemTempToday.Click += (s, e) => { UiDialogs.ShowTempDialog(); };
             ItemTempClear.Click += (s, e) =>
             {
                 Cfg.TempDate = ""; Cfg.TempStart = ""; Cfg.TempEnd = "";
+                Cfg.TempQuotaMin = 0;
                 Engine.WarnKey = null;
                 Cfg.Save();
                 UpdateTrayMenuText();
