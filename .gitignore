@@ -24,6 +24,9 @@ probe.exe
 probe.log
 build_probe.ps1
 
+# 本机专用脚本（含个人路径）
+git-push.bat
+
 # 打包输出
 dist/
 

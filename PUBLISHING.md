@@ -22,8 +22,8 @@ git init
 git add README.md LICENSE .gitignore GameGuardApp.cs build.bat make-release.bat GameGuard.ps1 install.bat uninstall.bat pause.bat resume.bat GameGuard.vbs guard.ico docs
 git commit -m "GameGuard v1.0.0 首个发布版本"
 git branch -M main
-git remote add origin https://github.com/<你的用户名>/GameGuard.git
-git push -u origin main
+rem 远端已配置为 https://github.com/Ruan-shi/GameGuard.git
+git push -u origin main   （或直接双击 git-push.bat）
 ```
 
 ## 第 3 步：创建 Release（发布可下载的 zip）

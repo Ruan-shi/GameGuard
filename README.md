@@ -36,7 +36,7 @@
 需要 Windows 10+ 与系统自带的 .NET Framework 4 编译器（无需安装任何 SDK）：
 
 ```bat
-git clone https://github.com/<你的用户名>/GameGuard.git
+git clone https://github.com/Ruan-shi/GameGuard.git
 cd GameGuard
 build.bat
 ```
