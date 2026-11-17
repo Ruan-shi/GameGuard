@@ -316,20 +316,21 @@ namespace GameGuard
     public static class Usage
     {
         private static DateTime? _lastTick = null;
-        private static double _bufSec = 0;      // 未落盘的秒数，满 1 分钟冲刷一次
+        private static Dictionary<string, double> _pending = new Dictionary<string, double>();   // 每个游戏未落盘的秒数
 
         private static string CsvPath { get { return Path.Combine(Cfg.ScriptDir, "usage.csv"); } }
 
         // 每次轮询调用：游戏运行中就累计真实时间差（断档 >120 秒视为睡眠，不计）
+        // 多游戏并行运行时，本轮时间均摊给每个运行中的游戏
         public static void Record(bool running)
         {
             var now = DateTime.Now;
             string today = now.ToString("yyyy-MM-dd");
-            string gname = GameName();
 
-            if (!running)
+            var names = running ? Engine.GetRunningGameNames() : new List<string>();
+            if (names.Count == 0)
             {
-                FlushBuffer(today, gname);
+                FlushAll(today);
                 _lastTick = null;
                 return;
             }
@@ -337,33 +338,40 @@ namespace GameGuard
             double gap = (now - _lastTick.Value).TotalSeconds;
             _lastTick = now;
             if (gap <= 0 || gap > 120) return;
-            _bufSec += gap;
-            if (_bufSec >= 60)
+
+            double each = gap / names.Count;
+            foreach (var nm in names)
             {
-                int mins = (int)(_bufSec / 60.0);
-                _bufSec -= mins * 60;
-                AppendRow(today, gname, mins);
+                if (!_pending.ContainsKey(nm)) _pending[nm] = 0;
+                _pending[nm] += each;
+            }
+
+            // 冲刷满 1 分钟的条目
+            var done = new List<string>();
+            foreach (var kv in _pending)
+                if (kv.Value >= 60) done.Add(kv.Key);
+            foreach (var nm in done)
+            {
+                int mins = (int)(_pending[nm] / 60.0);
+                _pending[nm] -= mins * 60;
+                AppendRow(today, nm, mins);
             }
         }
 
         // 退出程序前把零头落盘
         public static void FinalFlush()
         {
-            FlushBuffer(DateTime.Now.ToString("yyyy-MM-dd"), GameName());
+            FlushAll(DateTime.Now.ToString("yyyy-MM-dd"));
         }
 
-        private static void FlushBuffer(string today, string gname)
+        private static void FlushAll(string today)
         {
-            if (_bufSec < 1) return;
-            int mins = (int)Math.Round(_bufSec / 60.0);
-            if (mins > 0) AppendRow(today, gname, mins);
-            _bufSec = 0;
-        }
-
-        private static string GameName()
-        {
-            var g = Engine.GetActiveGame();
-            return g != null ? g.Name : Cfg.GameTitle;
+            foreach (var kv in _pending)
+            {
+                int mins = (int)Math.Round(kv.Value / 60.0);
+                if (mins > 0) AppendRow(today, kv.Key, mins);
+            }
+            _pending.Clear();
         }
 
         private static void AppendRow(string today, string gname, int mins)
@@ -702,21 +710,36 @@ namespace GameGuard
             return found;
         }
 
-        public static GameEntry GetActiveGame()
+        public static List<string> GetRunningGameNames()
         {
+            var names = new List<string>();
+            var seen = new HashSet<string>();
             foreach (var g in Cfg.Games)
             {
+                bool found = false;
                 foreach (var pn in g.Processes)
                 {
                     if (string.IsNullOrWhiteSpace(pn)) continue;
                     try
                     {
                         if (System.Diagnostics.Process.GetProcessesByName(pn.Trim()).Length > 0)
-                            return g;
+                        {
+                            found = true;
+                            break;
+                        }
                     }
                     catch { }
                 }
+                if (found && seen.Add(g.Name)) names.Add(g.Name);
             }
+            return names;
+        }
+
+        public static GameEntry GetActiveGame()
+        {
+            foreach (var name in GetRunningGameNames())
+                foreach (var g in Cfg.Games)
+                    if (g.Name == name) return g;
             return null;
         }
 
@@ -1531,9 +1554,11 @@ namespace GameGuard
         // ---------- 本周统计 ----------
         public static void ShowStatsDialog()
         {
-            // 读 usage.csv（每行：日期,游戏,分钟），聚合出每日与每游戏时长
+            // 读 usage.csv（每行：日期,游戏,分钟），聚合出每日、每游戏与今日时长
             var dayMin = new Dictionary<string, int>();
             var gameMin = new Dictionary<string, int>();
+            var todayGameMin = new Dictionary<string, int>();
+            string todayKey = DateTime.Now.ToString("yyyy-MM-dd");
             try
             {
                 string path = Path.Combine(Cfg.ScriptDir, "usage.csv");
@@ -1550,6 +1575,11 @@ namespace GameGuard
                         dayMin[d] += mins;
                         if (!gameMin.ContainsKey(g)) gameMin[g] = 0;
                         gameMin[g] += mins;
+                        if (d == todayKey)
+                        {
+                            if (!todayGameMin.ContainsKey(g)) todayGameMin[g] = 0;
+                            todayGameMin[g] += mins;
+                        }
                     }
                 }
             }
@@ -1571,7 +1601,6 @@ namespace GameGuard
                 if (v > maxMin) maxMin = v;
             }
             string[] weekNames = new string[] { "日", "一", "二", "三", "四", "五", "六" };
-            string todayKey = DateTime.Now.ToString("yyyy-MM-dd");
 
             var lblSummary = Ui.MakeLabel(string.Format(
                 "近 7 天合计 {0} 小时 {1} 分（日均 {2} 分）", weekTotal / 60, weekTotal % 60, weekTotal / 7),
@@ -1624,7 +1653,12 @@ namespace GameGuard
             if (sorted.Count == 0)
                 list.Items.Add("还没有使用记录——游戏运行满 1 分钟后这里会出现数据");
             foreach (var kv in sorted)
-                list.Items.Add(string.Format("{0}    {1} 小时 {2} 分", kv.Key, kv.Value / 60, kv.Value % 60));
+            {
+                string row = string.Format("{0}    合计 {1} 小时 {2} 分", kv.Key, kv.Value / 60, kv.Value % 60);
+                int td = todayGameMin.ContainsKey(kv.Key) ? todayGameMin[kv.Key] : 0;
+                if (td > 0) row += string.Format("  ·  今日 {0} 分", td);
+                list.Items.Add(row);
+            }
             form.Controls.Add(list);
 
             var line = Ui.MakeLine(20, 392, 420);
@@ -1754,8 +1788,9 @@ namespace GameGuard
             var procs = Engine.GetGameProcesses();
             if (procs.Count > 0)
             {
-                var g = Engine.GetActiveGame();
-                string nm = g != null ? g.Name : Cfg.GameTitle;
+                var names = Engine.GetRunningGameNames();
+                string nm = names.Count == 0 ? Cfg.GameTitle
+                    : (names.Count == 1 ? names[0] : names[0] + " 等 " + names.Count + " 个游戏");
                 if (Engine.DueTime != null)
                 {
                     int left = (int)Math.Ceiling((Engine.DueTime.Value - DateTime.Now).TotalSeconds);
