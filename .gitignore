@@ -18,6 +18,11 @@ usage.sum
 usage.bak.csv
 usage.bak.sum
 usage.bad.csv
+events.csv
+events.bak.csv
+events.sum
+events.bak.sum
+events.bad.csv
 panel_check.png
 *_snap.png
 selftest.png

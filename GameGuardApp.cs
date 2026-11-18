@@ -163,6 +163,7 @@ namespace GameGuard
                         File.Copy(CfgBakPath, ConfigPath, true);
                         TamperRestored = true;
                         Log.Write("配置已从 config.bak.json 恢复");
+                        Events.Record("配置防护", "配置被手改，已自动恢复最近合法配置");
                         return true;
                     }
                 }
@@ -171,6 +172,7 @@ namespace GameGuard
                 try { File.Delete(CfgSumPath); } catch { }
                 TamperReset = true;
                 Log.Write("无有效备份，配置已重置为默认值（原文件留存为 config.json.bad）");
+                Events.Record("配置防护", "配置被手改且无有效备份，已重置默认（留存 config.json.bad）");
                 Save();   // 重新生成默认配置 + 备份 + 校验
                 return true;
             }
@@ -430,27 +432,6 @@ namespace GameGuard
         private static string BakSumPath { get { return Path.Combine(Cfg.ScriptDir, "usage.bak.sum"); } }
         private const string UsageSalt = "GameGuard::usage::v1::";
 
-        // 链式哈希：h(N) = SHA256(h(N-1) + "|" + 第N行)，任意一行被删改都会导致整条链对不上
-        private static string ChainStep(string prev, string line)
-        {
-            byte[] data = Encoding.UTF8.GetBytes(prev + "|" + line);
-            using (var sha = System.Security.Cryptography.SHA256.Create())
-            {
-                return BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "").ToLower();
-            }
-        }
-
-        private static string ComputeChain(string path)
-        {
-            string h = UsageSalt;
-            foreach (var ln in File.ReadAllLines(path, Encoding.UTF8))
-            {
-                if (ln.Trim().Length == 0) continue;
-                h = ChainStep(h, ln);
-            }
-            return h;
-        }
-
         // 完整性状态：fresh=尚无记录 / ok / missing=csv 缺失但校验存在 / mismatch=内容对不上
         private static string CheckIntegrity()
         {
@@ -460,12 +441,12 @@ namespace GameGuard
             if (hasCsv && !hasSum)
             {
                 // 首次启用校验：采纳现状作为基线
-                File.WriteAllText(SumPath, ComputeChain(CsvPath), Encoding.ASCII);
+                File.WriteAllText(SumPath, ChainHash.Compute(CsvPath, UsageSalt), Encoding.ASCII);
                 Log.Write("已为 usage.csv 建立校验基线");
                 return "ok";
             }
             if (!hasCsv) return "missing";
-            return ComputeChain(CsvPath) == File.ReadAllText(SumPath, Encoding.ASCII).Trim() ? "ok" : "mismatch";
+            return ChainHash.Compute(CsvPath, UsageSalt) == File.ReadAllText(SumPath, Encoding.ASCII).Trim() ? "ok" : "mismatch";
         }
 
         // 启动与统计前调用：能恢复则从镜像备份恢复
@@ -482,7 +463,7 @@ namespace GameGuard
                 try
                 {
                     bakOk = File.Exists(BakPath) && File.Exists(BakSumPath) &&
-                            ComputeChain(BakPath) == File.ReadAllText(BakSumPath, Encoding.ASCII).Trim();
+                            ChainHash.Compute(BakPath, UsageSalt) == File.ReadAllText(BakSumPath, Encoding.ASCII).Trim();
                 }
                 catch { }
                 if (bakOk)
@@ -490,6 +471,7 @@ namespace GameGuard
                     File.Copy(BakPath, CsvPath, true);
                     File.Copy(BakSumPath, SumPath, true);
                     Log.Write("使用记录已从 usage.bak.csv 恢复");
+                    Events.Record("记录防护", "使用记录被删改，已从备份恢复");
                     return "restored";
                 }
 
@@ -502,6 +484,7 @@ namespace GameGuard
                 }
                 catch { }
                 Log.Write("使用记录无法恢复，已重新开始记录（损坏文件留存为 usage.bad.csv）");
+                Events.Record("记录防护", "使用记录损坏无法恢复，已重新开始记录");
                 return "damaged";
             }
             catch { return "ok"; }
@@ -568,11 +551,132 @@ namespace GameGuard
                 File.AppendAllText(CsvPath,
                     today + "," + gname + "," + mins + Environment.NewLine, Encoding.UTF8);
                 // 维护链式校验与镜像备份（防删改）
-                File.WriteAllText(SumPath, ComputeChain(CsvPath), Encoding.ASCII);
+                File.WriteAllText(SumPath, ChainHash.Compute(CsvPath, UsageSalt), Encoding.ASCII);
                 File.Copy(CsvPath, BakPath, true);
                 File.Copy(SumPath, BakSumPath, true);
             }
             catch { }
+        }
+    }
+
+    // ==================== 链式哈希（防删改校验的共用工具）====================
+    public static class ChainHash
+    {
+        public static string Step(string prev, string line)
+        {
+            byte[] data = Encoding.UTF8.GetBytes(prev + "|" + line);
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                return BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "").ToLower();
+            }
+        }
+
+        public static string Compute(string path, string salt)
+        {
+            string h = salt;
+            foreach (var ln in File.ReadAllLines(path, Encoding.UTF8))
+            {
+                if (ln.Trim().Length == 0) continue;
+                h = Step(h, ln);
+            }
+            return h;
+        }
+    }
+
+    // ==================== 事件记录（events.csv：续期/强制结束/上调/防护拦截）====================
+    public static class Events
+    {
+        private static string CsvPath { get { return Path.Combine(Cfg.ScriptDir, "events.csv"); } }
+        private static string BakPath { get { return Path.Combine(Cfg.ScriptDir, "events.bak.csv"); } }
+        private static string SumPath { get { return Path.Combine(Cfg.ScriptDir, "events.sum"); } }
+        private static string BakSumPath { get { return Path.Combine(Cfg.ScriptDir, "events.bak.sum"); } }
+        private const string Salt = "GameGuard::events::v1::";
+
+        public static void Record(string type, string detail)
+        {
+            try
+            {
+                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "," +
+                    type + "," + detail.Replace(",", "，").Replace("\r", " ").Replace("\n", " ");
+                File.AppendAllText(CsvPath, line + Environment.NewLine, Encoding.UTF8);
+                File.WriteAllText(SumPath, ChainHash.Compute(CsvPath, Salt), Encoding.ASCII);
+                File.Copy(CsvPath, BakPath, true);
+                File.Copy(SumPath, BakSumPath, true);
+            }
+            catch { }
+        }
+
+        // 完整性：fresh / ok / missing / mismatch
+        private static string CheckIntegrity()
+        {
+            bool hasCsv = File.Exists(CsvPath);
+            bool hasSum = File.Exists(SumPath);
+            if (!hasCsv && !hasSum) return "fresh";
+            if (hasCsv && !hasSum)
+            {
+                File.WriteAllText(SumPath, ChainHash.Compute(CsvPath, Salt), Encoding.ASCII);
+                Log.Write("已为 events.csv 建立校验基线");
+                return "ok";
+            }
+            if (!hasCsv) return "missing";
+            return ChainHash.Compute(CsvPath, Salt) == File.ReadAllText(SumPath, Encoding.ASCII).Trim() ? "ok" : "mismatch";
+        }
+
+        public static string VerifyAndRepair()
+        {
+            try
+            {
+                string v = CheckIntegrity();
+                if (v == "ok" || v == "fresh") return "ok";
+                Log.Write("事件记录完整性异常：" + v);
+                bool bakOk = false;
+                try
+                {
+                    bakOk = File.Exists(BakPath) && File.Exists(BakSumPath) &&
+                            ChainHash.Compute(BakPath, Salt) == File.ReadAllText(BakSumPath, Encoding.ASCII).Trim();
+                }
+                catch { }
+                if (bakOk)
+                {
+                    File.Copy(BakPath, CsvPath, true);
+                    File.Copy(BakSumPath, SumPath, true);
+                    Log.Write("事件记录已从备份恢复");
+                    return "restored";
+                }
+                try
+                {
+                    if (File.Exists(CsvPath)) File.Copy(CsvPath, Path.Combine(Cfg.ScriptDir, "events.bad.csv"), true);
+                    File.Delete(CsvPath);
+                    File.Delete(SumPath);
+                }
+                catch { }
+                Log.Write("事件记录无法恢复，已重新开始（留存为 events.bad.csv）");
+                return "damaged";
+            }
+            catch { return "ok"; }
+        }
+
+        // 读取近 days 天事件：每项 [时间, 类型, 明细]
+        public static List<string[]> ReadDays(int days)
+        {
+            var res = new List<string[]>();
+            try
+            {
+                VerifyAndRepair();
+                if (!File.Exists(CsvPath)) return res;
+                DateTime min = DateTime.Now.AddDays(-days);
+                foreach (var ln in File.ReadAllLines(CsvPath, Encoding.UTF8))
+                {
+                    var seg = ln.Split(new char[] { ',' }, 3);
+                    if (seg.Length < 3) continue;
+                    DateTime t;
+                    if (!DateTime.TryParse(seg[0], out t)) continue;
+                    if (t < min) continue;
+                    res.Add(new string[] { seg[0], seg[1], seg[2] });
+                }
+            }
+            catch { }
+            return res;
         }
     }
 
@@ -957,6 +1061,8 @@ namespace GameGuard
                 try { p.Kill(); } catch { }
             }
             Log.Write("结束游戏，原因：" + reason);
+            var g = GetActiveGame();
+            Events.Record("强制结束", (g != null ? g.Name : Cfg.GameTitle) + "：" + reason);
             DueTime = null;
             RoundStart = null;
             ExtendUsed = 0;
@@ -1042,6 +1148,7 @@ namespace GameGuard
                 int left = Math.Max(0, Cfg.MaxExtend - ExtendUsed);
                 Log.Write(string.Format("用户续期 {0} 分钟，剩余 {1} 次，新截止 {2}",
                     Cfg.ExtendMinutes, left, DueTime.Value.ToString("HH:mm:ss")));
+                Events.Record("续期", gname + " 续期 " + Cfg.ExtendMinutes + " 分钟（剩 " + left + " 次）");
                 if (wasMinimized && main != null)
                 {
                     try
@@ -1054,7 +1161,9 @@ namespace GameGuard
             }
             else
             {
-                Log.Write("结束游戏，原因：" + (choice == "kill" ? "用户选择" : "弹窗超时未响应"));
+                string why = choice == "kill" ? "用户选择结束" : "弹窗超时未响应";
+                Log.Write("结束游戏，原因：" + why);
+                Events.Record("强制结束", gname + " 轮次到点，" + why);
                 foreach (var p in procs) { try { p.Kill(); } catch { } }
                 DueTime = null;
                 RoundStart = null;
@@ -1309,10 +1418,13 @@ namespace GameGuard
                 int left = Math.Max(0, Cfg.MaxExtend - ExtendUsed);
                 Log.Write(string.Format("配额续期 {0} 分钟，剩余 {1} 次",
                     Cfg.ExtendMinutes, left));
+                Events.Record("续期", gname + " 配额用完后续期 " + Cfg.ExtendMinutes + " 分钟（剩 " + left + " 次）");
             }
             else
             {
-                Log.Write("结束游戏，原因：" + (choice == "kill" ? "配额用完，用户选择" : "配额用完，弹窗超时未响应"));
+                string why = choice == "kill" ? "配额用完，用户选择结束" : "配额用完，弹窗超时未响应";
+                Log.Write("结束游戏，原因：" + why);
+                Events.Record("强制结束", gname + " " + why);
                 foreach (var p in procs) { try { p.Kill(); } catch { } }
                 QuotaLastTick = null;
             }
@@ -1734,12 +1846,14 @@ namespace GameGuard
             btnCancel.Click += (s, e) =>
             {
                 Log.Write("冷静期内取消退出，管控继续");
+                Events.Record("退出", "冷静期内取消退出，管控继续");
                 form.Close();
             };
             btnYes.Click += (s, e) =>
             {
                 confirmed = true;
                 Log.Write("冷静期结束，用户确认退出");
+                Events.Record("退出", "冷静期结束，确认退出程序");
                 form.Close();
             };
             form.FormClosed += (s, e) =>
@@ -1790,8 +1904,20 @@ namespace GameGuard
             }
             catch { }
 
-            var form = Ui.MakeForm("本周游戏统计", 460, 440, false);
+            var form = Ui.MakeForm("本周游戏统计", 460, 560, false);
             Ui.AddTopBar(form, 460);
+
+            // 事件统计：续期 / 上调 / 拦截 / 强制结束
+            var evts = Events.ReadDays(7);
+            int nRenew = 0, nUp = 0, nBlock = 0, nKill = 0;
+            foreach (var e in evts)
+            {
+                string ty = e[1];
+                if (ty == "续期") nRenew++;
+                else if (ty == "上调") nUp++;
+                else if (ty == "上调被拒" || ty == "配置防护" || ty == "记录防护") nBlock++;
+                else if (ty == "强制结束") nKill++;
+            }
 
             var days = new List<string>();
             for (int i = 6; i >= 0; i--)
@@ -1812,7 +1938,7 @@ namespace GameGuard
                 20, 22, 420, 24, 10.5, true, Ui.TextDark, "MiddleLeft");
 
             var pic = new PictureBox();
-            pic.Bounds = new Rectangle(Ui.U(20), Ui.U(54), Ui.U(420), Ui.U(220));
+            pic.Bounds = new Rectangle(Ui.U(20), Ui.U(54), Ui.U(420), Ui.U(200));
             pic.BackColor = Color.White;
             pic.Paint += (s, e) =>
             {
@@ -1850,7 +1976,7 @@ namespace GameGuard
 
             // 每个游戏合计
             var list = new ListBox();
-            list.Bounds = new Rectangle(Ui.U(20), Ui.U(284), Ui.U(420), Ui.U(100));
+            list.Bounds = new Rectangle(Ui.U(20), Ui.U(262), Ui.U(420), Ui.U(84));
             list.Font = new Font("Microsoft YaHei UI", 9);
             list.BorderStyle = BorderStyle.FixedSingle;
             var sorted = new List<KeyValuePair<string, int>>(gameMin);
@@ -1870,10 +1996,30 @@ namespace GameGuard
             }
             form.Controls.Add(list);
 
-            var line = Ui.MakeLine(20, 392, 420);
-            var btnClose = Ui.MakeButton("关闭", 340, 398, 100, 36, false, 10);
+            // 近 7 天事件
+            var lblEvents = Ui.MakeLabel(string.Format(
+                "本周事件：续期 {0} 次 · 上调 {1} 次 · 拦截 {2} 次 · 强制结束 {3} 次",
+                nRenew, nUp, nBlock, nKill),
+                20, 352, 420, 22, 10, true, Ui.TextDark, "MiddleLeft");
+
+            var evList = new ListBox();
+            evList.Bounds = new Rectangle(Ui.U(20), Ui.U(376), Ui.U(420), Ui.U(118));
+            evList.Font = new Font("Microsoft YaHei UI", 8.5f);
+            evList.BorderStyle = BorderStyle.FixedSingle;
+            if (evts.Count == 0)
+                evList.Items.Add("本周没有事件记录（续期/上调/拦截/结束都会出现在这里）");
+            for (int i = evts.Count - 1; i >= 0 && i > evts.Count - 21; i--)
+            {
+                var e = evts[i];
+                evList.Items.Add(string.Format("{0}  [{1}]  {2}",
+                    e[0].Length >= 16 ? e[0].Substring(11, 5) : e[0], e[1], e[2]));
+            }
+            form.Controls.Add(evList);
+
+            var line = Ui.MakeLine(20, 502, 420);
+            var btnClose = Ui.MakeButton("关闭", 340, 508, 100, 36, false, 10);
             btnClose.Click += (s, e) => form.Close();
-            form.Controls.AddRange(new Control[] { lblSummary, line, btnClose });
+            form.Controls.AddRange(new Control[] { lblSummary, lblEvents, line, btnClose });
 
             form.ShowDialog();
             form.Dispose();
@@ -2059,6 +2205,7 @@ namespace GameGuard
                         name),
                     "每日上调上限", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 Log.Write(string.Format("上调被拒绝：{0} {1}→{2}（今日已上调 {3} 次）", name, oldV, newV, usedToday));
+                Events.Record("上调被拒", name + " " + oldV + "→" + newV + "（当日额度已用完）");
                 return false;
             }
             if (delta >= 30)
@@ -2070,6 +2217,7 @@ namespace GameGuard
                     MessageBoxDefaultButton.Button2);
                 Log.Write(string.Format("上调确认：{0} {1}→{2}（+{3}），用户选择{4}",
                     name, oldV, newV, delta, ans == DialogResult.Yes ? "确认" : "取消"));
+                if (ans == DialogResult.Yes) Events.Record("上调", name + " " + oldV + "→" + newV + "（+" + delta + "）");
                 return ans == DialogResult.Yes;
             }
             return true;
@@ -2094,6 +2242,8 @@ namespace GameGuard
                     "每日上调上限", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 Log.Write(string.Format("上调被拒绝：可玩时段 {0:HH:mm}-{1:HH:mm}→{2:HH:mm}-{3:HH:mm}（今日已上调 {4} 次）",
                     oldS, oldE, newS, newE, usedToday));
+                Events.Record("上调被拒", "时段 " + oldS.ToString("HH:mm") + "-" + oldE.ToString("HH:mm") +
+                    " → " + newS.ToString("HH:mm") + "-" + newE.ToString("HH:mm") + "（当日额度已用完）");
                 return false;
             }
 
@@ -2111,6 +2261,9 @@ namespace GameGuard
                 MessageBoxDefaultButton.Button2);
             Log.Write(string.Format("上调确认：可玩时段 {0:HH:mm}-{1:HH:mm}→{2:HH:mm}-{3:HH:mm}，用户选择{4}",
                 oldS, oldE, newS, newE, ans == DialogResult.Yes ? "确认" : "取消"));
+            if (ans == DialogResult.Yes)
+                Events.Record("上调", "时段 " + oldS.ToString("HH:mm") + "-" + oldE.ToString("HH:mm") +
+                    " → " + newS.ToString("HH:mm") + "-" + newE.ToString("HH:mm") + "（" + oldLen + "→" + newLen + " 分钟）");
             return ans == DialogResult.Yes;
         }
 
@@ -2385,8 +2538,7 @@ namespace GameGuard
                     MessageBox.Show(form, "当前没有检测到被管控的游戏在运行。", "立即结束游戏");
                     return;
                 }
-                foreach (var p in ps) { try { p.Kill(); } catch { } }
-                Log.Write("面板：立即结束游戏");
+                Engine.StopGameNow("面板手动结束");
                 UpdateState();
             };
 
@@ -2487,8 +2639,9 @@ namespace GameGuard
             }
             catch { }
 
-            // 使用记录完整性检查（防删改，能恢复则恢复）
+            // 使用记录与事件记录完整性检查（防删改，能恢复则恢复）
             try { Usage.VerifyAndRepair(); } catch { }
+            try { Events.VerifyAndRepair(); } catch { }
 
             Notify = new NotifyIcon();
             try
