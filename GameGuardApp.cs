@@ -1636,7 +1636,26 @@ namespace GameGuard
                 var targetType = shortcut.GetType();
                 var targetPath = targetType.GetProperty("TargetPath");
                 string tp = targetPath != null ? Convert.ToString(targetPath.GetValue(shortcut, null)) : "";
-                if (string.IsNullOrEmpty(tp) || !File.Exists(tp)) return null;
+                if (string.IsNullOrEmpty(tp)) return null;
+                // 部分快捷方式存的是相对路径（如 .\..\..\xxx\game.exe），
+                // 需按 lnk 所在目录（或其工作目录字段）展开成绝对路径再判断
+                if (!Path.IsPathRooted(tp))
+                {
+                    string lnkDir = Path.GetDirectoryName(lnkPath);
+                    string cand = Path.GetFullPath(Path.Combine(lnkDir ?? "", tp));
+                    if (File.Exists(cand))
+                        tp = cand;
+                    else
+                    {
+                        var wdProp = targetType.GetProperty("WorkingDirectory");
+                        string wd = wdProp != null ? Convert.ToString(wdProp.GetValue(shortcut, null)) : "";
+                        if (!string.IsNullOrEmpty(wd))
+                            tp = Path.GetFullPath(Path.Combine(wd, tp));
+                        else
+                            tp = cand;
+                    }
+                }
+                if (!File.Exists(tp)) return null;
                 // 指向的是另一个快捷方式（常见于 UWP/特殊安装），尝试再解析一层
                 if (tp.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
                     return ResolveShortcutTarget(tp);
