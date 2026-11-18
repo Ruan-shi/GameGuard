@@ -10,6 +10,7 @@ gameguard.log
 config.json
 paused.flag
 usage.csv
+watchdog_off.flag
 panel_check.png
 *_snap.png
 selftest.png

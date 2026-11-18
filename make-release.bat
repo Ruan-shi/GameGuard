@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 > _run_marker.log echo batch started %DATE% %TIME%
 
-set VERSION=1.3.0
+set VERSION=1.4.0
 set DIST=dist\GameGuard-%VERSION%
 
 echo === 1/4 Compiling release exe ===
@@ -32,6 +32,7 @@ echo === 2/4 Copying release files ===
 copy /y *.txt "%DIST%\" >nul
 copy /y "docs\config.example.json" "%DIST%\" >nul
 copy /y "GameGuard.vbs" "%DIST%\" >nul
+copy /y "watchdog.vbs" "%DIST%\" >nul
 copy /y "install.bat" "%DIST%\" >nul
 copy /y "uninstall.bat" "%DIST%\" >nul
 

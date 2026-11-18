@@ -28,8 +28,8 @@ using System.Reflection;
 [assembly: AssemblyDescription("轻量 Windows 托盘工具：控制游戏时长与可玩时段")]
 [assembly: AssemblyCompany("GameGuard Project")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 namespace GameGuard
 {
@@ -2222,6 +2222,12 @@ namespace GameGuard
             {
                 if (!UiDialogs.ShowExitConfirm()) return;
                 Usage.FinalFlush();
+                try
+                {
+                    File.WriteAllText(Path.Combine(Cfg.ScriptDir, "watchdog_off.flag"), "off", Encoding.ASCII);
+                    Log.Write("看门狗已暂停（正常退出），下次启动时恢复");
+                }
+                catch { }
                 Log.Write("用户退出 GameGuard");
                 try { MainForm.Notify.Visible = false; MainForm.Notify.Dispose(); } catch { }
                 Application.Exit();
@@ -2318,6 +2324,18 @@ namespace GameGuard
 
             Log.Write("===== GameGuard 启动 =====");
             Cfg.Load();
+
+            // 正常启动：清除「看门狗暂停」标志，看门狗恢复值守（正常退出时会写入该标志）
+            try
+            {
+                string wdFlag = Path.Combine(Cfg.ScriptDir, "watchdog_off.flag");
+                if (File.Exists(wdFlag))
+                {
+                    File.Delete(wdFlag);
+                    Log.Write("看门狗已恢复值守");
+                }
+            }
+            catch { }
 
             Notify = new NotifyIcon();
             try
@@ -2474,6 +2492,12 @@ namespace GameGuard
             {
                 if (!UiDialogs.ShowExitConfirm()) return;
                 Usage.FinalFlush();
+                try
+                {
+                    File.WriteAllText(Path.Combine(Cfg.ScriptDir, "watchdog_off.flag"), "off", Encoding.ASCII);
+                    Log.Write("看门狗已暂停（正常退出），下次启动时恢复");
+                }
+                catch { }
                 Log.Write("用户退出 GameGuard");
                 try { Notify.Visible = false; Notify.Dispose(); } catch { }
                 Application.Exit();
