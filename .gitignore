@@ -48,3 +48,4 @@ dist/
 .vs/
 obj/
 bin/
+_diag_*.png
