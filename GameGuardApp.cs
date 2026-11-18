@@ -828,6 +828,16 @@ namespace GameGuard
             return lbl;
         }
 
+        // 与自动高度控件（数字框/时间框：其真实高度恒等于字体行高，赋值再大也会被钳制）
+        // 严格对齐的行标签：高度取字体行高、顶部与控件同 y → 任意 DPI 下文字与框内文字完全重叠
+        public static Label MakeRowLabel(string text, int x, int y, int w,
+            double size, bool bold, Color color, string align)
+        {
+            var l = MakeLabel(text, x, y, w, 30, size, bold, color, align);
+            l.Height = l.Font.Height;
+            return l;
+        }
+
         public static DateTimePicker MakeTimePicker(int x, int y, int w, string value)
         {
             var d = new DateTimePicker();
@@ -1775,14 +1785,14 @@ namespace GameGuard
             var form = Ui.MakeForm("临时调整今天", 400, 224, false);
             Ui.AddTopBar(form, 400);
 
-            var lbl1 = Ui.MakeLabel("开始时间", 20, 56, 64, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lbl1 = Ui.MakeRowLabel("开始时间", 20, 56, 64, 10, false, Ui.TextDark, "MiddleRight");
             var dtpStart = Ui.MakeTimePicker(90, 56, 104, baseStart);
-            var lbl2 = Ui.MakeLabel("结束时间", 204, 56, 68, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lbl2 = Ui.MakeRowLabel("结束时间", 204, 56, 68, 10, false, Ui.TextDark, "MiddleRight");
             var dtpEnd = Ui.MakeTimePicker(276, 56, 104, baseEnd);
-            var lblQuota = Ui.MakeLabel("今日配额", 20, 92, 64, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lblQuota = Ui.MakeRowLabel("今日配额", 20, 92, 64, 10, false, Ui.TextDark, "MiddleRight");
             var numQuota = Ui.MakeNumber(90, 92, 74, 0, 1440, Cfg.TempQuotaMin);
-            var lblUnitQ = Ui.MakeLabel("分钟", 170, 92, 40, 30, 9, false, Ui.SubText, "MiddleLeft");
-            var lblQTip = Ui.MakeLabel("0 = 不调整配额（只调时段）", 216, 92, 170, 30, 9, false, Ui.SubText, "MiddleLeft");
+            var lblUnitQ = Ui.MakeRowLabel("分钟", 170, 92, 40, 9, false, Ui.SubText, "MiddleLeft");
+            var lblQTip = Ui.MakeRowLabel("0 = 不调整配额（只调时段）", 216, 92, 170, 9, false, Ui.SubText, "MiddleLeft");
             var lblTip = Ui.MakeSection("临时调整（仅对今天生效，明天自动恢复）", 20, 20, 360, 24);
             var btnSave = Ui.MakeButton("今天就这样", 152, 164, 116, 36, true, 10);
             var btnCancel = Ui.MakeButton("取消", 280, 164, 100, 36, false, 10);
@@ -2359,14 +2369,14 @@ namespace GameGuard
             var secA = Ui.MakeSection("可玩时段", 20, 140, 380, 26);
 
             // 栅格：标签列 20..98（右对齐），输入列从 104 开始；第二列标签右边缘 288，输入从 294 开始
-            var lbl1 = Ui.MakeLabel("开始时间", 20, 168, 78, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lbl1 = Ui.MakeRowLabel("开始时间", 20, 168, 78, 10, false, Ui.TextDark, "MiddleRight");
             var dtpStart = Ui.MakeTimePicker(104, 168, 100, Cfg.ScheduleStart);
-            var lbl2 = Ui.MakeLabel("结束时间", 210, 168, 78, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lbl2 = Ui.MakeRowLabel("结束时间", 210, 168, 78, 10, false, Ui.TextDark, "MiddleRight");
             var dtpEnd = Ui.MakeTimePicker(294, 168, 100, Cfg.ScheduleEnd);
 
-            var lbl3 = Ui.MakeLabel("结束前预警", 20, 204, 78, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lbl3 = Ui.MakeRowLabel("结束前预警", 20, 204, 78, 10, false, Ui.TextDark, "MiddleRight");
             var numWarn = Ui.MakeNumber(104, 204, 74, 1, 60, Cfg.ScheduleWarnMin);
-            var lblUnitWarn = Ui.MakeLabel("分钟", 184, 204, 40, 30, 9, false, Ui.SubText, "MiddleLeft");
+            var lblUnitWarn = Ui.MakeRowLabel("分钟", 184, 204, 40, 9, false, Ui.SubText, "MiddleLeft");
 
             var lbl5 = Ui.MakeLabel("生效星期", 20, 241, 78, 30, 10, false, Ui.TextDark, "MiddleRight");
             string[] dayNames = new string[] { "日", "一", "二", "三", "四", "五", "六" };
@@ -2382,28 +2392,28 @@ namespace GameGuard
 
             var secB = Ui.MakeSection("连续时长", 20, 284, 380, 26);
 
-            var lblPlay = Ui.MakeLabel("连续时长", 20, 312, 78, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lblPlay = Ui.MakeRowLabel("连续时长", 20, 312, 78, 10, false, Ui.TextDark, "MiddleRight");
             var numPlay = Ui.MakeNumber(104, 312, 74, 5, 480, Cfg.PlayMinutes);
-            var lblUnitPlay = Ui.MakeLabel("分钟", 184, 312, 40, 30, 9, false, Ui.SubText, "MiddleLeft");
+            var lblUnitPlay = Ui.MakeRowLabel("分钟", 184, 312, 40, 9, false, Ui.SubText, "MiddleLeft");
 
-            var lblExt = Ui.MakeLabel("每次续期", 20, 348, 78, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lblExt = Ui.MakeRowLabel("每次续期", 20, 348, 78, 10, false, Ui.TextDark, "MiddleRight");
             var numExtend = Ui.MakeNumber(104, 348, 74, 1, 60, Cfg.ExtendMinutes);
-            var lblUnitExt = Ui.MakeLabel("分钟", 184, 348, 40, 30, 9, false, Ui.SubText, "MiddleLeft");
-            var lblMax = Ui.MakeLabel("最多", 240, 348, 48, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lblUnitExt = Ui.MakeRowLabel("分钟", 184, 348, 40, 9, false, Ui.SubText, "MiddleLeft");
+            var lblMax = Ui.MakeRowLabel("最多", 240, 348, 48, 10, false, Ui.TextDark, "MiddleRight");
             var numMax = Ui.MakeNumber(294, 348, 74, 0, 10, Cfg.MaxExtend);
-            var lblUnitMax = Ui.MakeLabel("次", 374, 348, 26, 30, 9, false, Ui.SubText, "MiddleLeft");
+            var lblUnitMax = Ui.MakeRowLabel("次", 374, 348, 26, 9, false, Ui.SubText, "MiddleLeft");
 
             var cbStackTip = Ui.MakeLabel("三种模式可同时勾选、叠加生效，至少保留一种\n上调规则：每个数字每天只能上调 1 次，上调 ≥30 分钟需确认，下调不限", 20, 384, 380, 34, 9, false, Ui.SubText, "MiddleLeft");
             var line4 = Ui.MakeLine(20, 420, 380);
 
             var secC = Ui.MakeSection("每日配额", 20, 424, 380, 26);
 
-            var lblQuota = Ui.MakeLabel("每日配额", 20, 452, 78, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lblQuota = Ui.MakeRowLabel("每日配额", 20, 452, 78, 10, false, Ui.TextDark, "MiddleRight");
             var numQuota = Ui.MakeNumber(104, 452, 74, 5, 1440, Cfg.QuotaMinutes);
-            var lblUnitQuota = Ui.MakeLabel("分钟", 184, 452, 40, 30, 9, false, Ui.SubText, "MiddleLeft");
-            var lblQWarn = Ui.MakeLabel("预警", 240, 452, 48, 30, 10, false, Ui.TextDark, "MiddleRight");
+            var lblUnitQuota = Ui.MakeRowLabel("分钟", 184, 452, 40, 9, false, Ui.SubText, "MiddleLeft");
+            var lblQWarn = Ui.MakeRowLabel("预警", 240, 452, 48, 10, false, Ui.TextDark, "MiddleRight");
             var numQWarn = Ui.MakeNumber(294, 452, 74, 1, 120, Cfg.QuotaWarnMin);
-            var lblUnitQWarn = Ui.MakeLabel("分钟", 374, 452, 40, 30, 9, false, Ui.SubText, "MiddleLeft");
+            var lblUnitQWarn = Ui.MakeRowLabel("分钟", 374, 452, 40, 9, false, Ui.SubText, "MiddleLeft");
             var lblQTip = Ui.MakeLabel("当天累计玩满即结束，续期沿用上面的续期设置", 20, 488, 380, 22, 9, false, Ui.SubText, "MiddleLeft");
             var line6 = Ui.MakeLine(20, 512, 380);
 
