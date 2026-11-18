@@ -1919,60 +1919,107 @@ namespace GameGuard
                 else if (ty == "强制结束") nKill++;
             }
 
-            var days = new List<string>();
-            for (int i = 6; i >= 0; i--)
-                days.Add(DateTime.Now.AddDays(-i).ToString("yyyy-MM-dd"));
-
-            int weekTotal = 0;
-            int maxMin = 30;
-            foreach (var d in days)
-            {
-                int v = dayMin.ContainsKey(d) ? dayMin[d] : 0;
-                weekTotal += v;
-                if (v > maxMin) maxMin = v;
-            }
             string[] weekNames = new string[] { "日", "一", "二", "三", "四", "五", "六" };
 
-            var lblSummary = Ui.MakeLabel(string.Format(
-                "近 7 天合计 {0} 小时 {1} 分（日均 {2} 分）", weekTotal / 60, weekTotal % 60, weekTotal / 7),
-                20, 22, 420, 24, 10.5, true, Ui.TextDark, "MiddleLeft");
+            // 月度趋势：近 7 天 / 近 30 天切换
+            int range = 7;
+            var lblSummary = Ui.MakeLabel("", 20, 22, 420, 24, 10.5, true, Ui.TextDark, "MiddleLeft");
+            var rb7 = Ui.MakeRadio("近 7 天", 20, 50, 90, 26, true);
+            var rb30 = Ui.MakeRadio("近 30 天", 116, 50, 110, 26, false);
+
+            Action updateSummary = () =>
+            {
+                int total = 0;
+                for (int i = 0; i < range; i++)
+                {
+                    string d = DateTime.Now.AddDays(-(range - 1 - i)).ToString("yyyy-MM-dd");
+                    total += dayMin.ContainsKey(d) ? dayMin[d] : 0;
+                }
+                lblSummary.Text = string.Format("近 {0} 天合计 {1} 小时 {2} 分（日均 {3} 分）",
+                    range, total / 60, total % 60, total / range);
+            };
+            updateSummary();
 
             var pic = new PictureBox();
-            pic.Bounds = new Rectangle(Ui.U(20), Ui.U(54), Ui.U(420), Ui.U(200));
+            pic.Bounds = new Rectangle(Ui.U(20), Ui.U(84), Ui.U(420), Ui.U(176));
             pic.BackColor = Color.White;
             pic.Paint += (s, e) =>
             {
                 var g2 = e.Graphics;
                 g2.SmoothingMode = SmoothingMode.AntiAlias;
                 int w = pic.ClientSize.Width, h = pic.ClientSize.Height;
-                int baseY = h - 40;
-                int slot = w / 7;
-                int barW = slot - 26;
+                int n = range;
+                int baseY = h - 34;
+                int slot = w / n;
+                int barW = Math.Max(6, slot - (n <= 7 ? 26 : 6));
+
+                var vals = new int[n];
+                int maxMin = 30;
+                DateTime today = DateTime.Now;
+                for (int i = 0; i < n; i++)
+                {
+                    string d = today.AddDays(-(n - 1 - i)).ToString("yyyy-MM-dd");
+                    vals[i] = dayMin.ContainsKey(d) ? dayMin[d] : 0;
+                    if (vals[i] > maxMin) maxMin = vals[i];
+                }
                 using (var penAxis = new Pen(Ui.Line, 1))
                     g2.DrawLine(penAxis, 4, baseY, w - 4, baseY);
-                for (int i = 0; i < 7; i++)
+                for (int i = 0; i < n; i++)
                 {
-                    int v = dayMin.ContainsKey(days[i]) ? dayMin[days[i]] : 0;
+                    int v = vals[i];
                     int x = i * slot + (slot - barW) / 2;
-                    int bh = v <= 0 ? 0 : (int)Math.Max(3.0, (double)v / maxMin * (baseY - 44));
-                    bool isToday = days[i] == todayKey;
-                    var d = DateTime.ParseExact(days[i], "yyyy-MM-dd", null);
+                    int bh = v <= 0 ? 0 : (int)Math.Max(3.0, (double)v / maxMin * (baseY - 40));
+                    string dstr = today.AddDays(-(n - 1 - i)).ToString("yyyy-MM-dd");
+                    bool isToday = dstr == todayKey;
                     if (bh > 0)
                     {
                         using (var br = new SolidBrush(isToday ? Ui.Primary : Color.FromArgb(120, 120, 120)))
                             g2.FillRectangle(br, x, baseY - bh, barW, bh);
-                        string vt = v >= 60 ? (v / 60) + "时" + (v % 60) + "分" : v + "分";
-                        using (var fV = new Font("Microsoft YaHei UI", 7.5f))
-                        using (var brT = new SolidBrush(Ui.TextDark))
-                            g2.DrawString(vt, fV, brT, x - 4, baseY - bh - 15);
                     }
-                    using (var fD = new Font("Microsoft YaHei UI", 7.5f))
-                    using (var brD = new SolidBrush(isToday ? Ui.Primary : Ui.SubText))
-                        g2.DrawString(d.ToString("M-d") + " 周" + weekNames[(int)d.DayOfWeek],
-                            fD, brD, x - 6, baseY + 4);
+                    if (n <= 7)
+                    {
+                        if (bh > 0)
+                        {
+                            string vt = v >= 60 ? (v / 60) + "时" + (v % 60) + "分" : v + "分";
+                            using (var fV = new Font("Microsoft YaHei UI", 7.5f))
+                            using (var brT = new SolidBrush(Ui.TextDark))
+                                g2.DrawString(vt, fV, brT, x - 4, baseY - bh - 15);
+                        }
+                        var d = DateTime.ParseExact(dstr, "yyyy-MM-dd", null);
+                        using (var fD = new Font("Microsoft YaHei UI", 7.5f))
+                        using (var brD = new SolidBrush(isToday ? Ui.Primary : Ui.SubText))
+                            g2.DrawString(d.ToString("M-d") + " 周" + weekNames[(int)d.DayOfWeek],
+                                fD, brD, x - 6, baseY + 4);
+                    }
+                    else if (i % 5 == 0 || i == n - 1)
+                    {
+                        var d = DateTime.ParseExact(dstr, "yyyy-MM-dd", null);
+                        using (var fD = new Font("Microsoft YaHei UI", 7f))
+                        using (var brD = new SolidBrush(isToday ? Ui.Primary : Ui.SubText))
+                            g2.DrawString(d.ToString("M-d"), fD, brD, x - 8, baseY + 4);
+                    }
+                }
+                // 30 天视图：叠加 7 日移动平均趋势线（红线）
+                if (n > 7)
+                {
+                    var pts = new List<PointF>();
+                    for (int i = 0; i < n; i++)
+                    {
+                        int start = Math.Max(0, i - 6);
+                        int sum = 0, c = 0;
+                        for (int j = start; j <= i; j++) { sum += vals[j]; c++; }
+                        double avg = (double)sum / c;
+                        int bh = (int)Math.Max(2.0, avg / maxMin * (baseY - 40));
+                        pts.Add(new PointF(i * slot + slot / 2f, baseY - bh));
+                    }
+                    using (var penT = new Pen(Ui.Primary, 2))
+                        g2.DrawLines(penT, pts.ToArray());
                 }
             };
             form.Controls.Add(pic);
+            form.Controls.AddRange(new Control[] { rb7, rb30 });
+            rb7.CheckedChanged += (s, e) => { if (rb7.Checked) { range = 7; updateSummary(); pic.Invalidate(); } };
+            rb30.CheckedChanged += (s, e) => { if (rb30.Checked) { range = 30; updateSummary(); pic.Invalidate(); } };
 
             // 每个游戏合计
             var list = new ListBox();
