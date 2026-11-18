@@ -1004,9 +1004,9 @@ namespace GameGuard
                         statusItem.Text = "状态：可玩时段已结束，正在关闭游戏";
                     }
                     Log.Write(string.Format("时段外检测到游戏运行，{0} 秒后关闭", Cfg.OutsideCountdown));
-                    UiDialogs.ShowNotice("现在不在可玩时段", msg,
-                        "每天可玩：" + realStart + " - " + realEnd,
-                        Cfg.OutsideCountdown, "{0} 秒后关闭游戏");
+                    UiDialogs.ShowToast("现在不在可玩时段",
+                        msg + "，将在 " + Cfg.OutsideCountdown + " 秒后关闭游戏\n每天可玩：" + realStart + " - " + realEnd);
+                    System.Threading.Thread.Sleep(Cfg.OutsideCountdown * 1000);   // 与旧弹窗倒计时等宽的缓冲
                     StopGameNow("不在可玩时段");
                     return;
                 }
@@ -1067,11 +1067,10 @@ namespace GameGuard
                         int warnMin = (int)Math.Ceiling(remainSec / 60.0);
                         Log.Write(string.Format("可玩时间仅剩 {0} 分 {1} 秒，弹出预警",
                             remainSec / 60, remainSec % 60));
-                        UiDialogs.ShowNotice(
+                        UiDialogs.ShowToast(
                             string.Format("可游玩时间剩余 {0} 分钟", warnMin),
-                            sched.End.ToString("HH:mm") + " 到点将自动结束游戏",
-                            "可玩时段：" + sched.Start.ToString("HH:mm") + " - " + sched.End.ToString("HH:mm"),
-                            10, "提示将在 {0} 秒后自动关闭");
+                            sched.End.ToString("HH:mm") + " 到点将自动结束游戏\n可玩时段：" +
+                                sched.Start.ToString("HH:mm") + " - " + sched.End.ToString("HH:mm"));
                     }
                 }
                 else if (Cfg.UseContinuous && DueTime != null && DateTime.Now >= DueTime.Value)
@@ -1089,11 +1088,10 @@ namespace GameGuard
                         QuotaWarnKey = todayKey2;
                         int qMin2 = (int)Math.Floor(qRemain / 60.0);
                         Log.Write(string.Format("今日配额仅剩约 {0} 分钟，弹出预警", qMin2));
-                        UiDialogs.ShowNotice("今日游戏时间即将用完",
-                            string.Format("剩余约 {0} 分钟", qMin2),
-                            "每日配额：" + QuotaTotalMin() + " 分钟" +
-                                (Cfg.TempDate == todayKey2 && Cfg.TempQuotaMin > 0 ? "（今日临时调整）" : ""),
-                            10, "提示将在 {0} 秒后自动关闭");
+                        UiDialogs.ShowToast("今日游戏时间即将用完",
+                            string.Format("剩余约 {0} 分钟", qMin2) +
+                            "\n每日配额：" + QuotaTotalMin() + " 分钟" +
+                                (Cfg.TempDate == todayKey2 && Cfg.TempQuotaMin > 0 ? "（今日临时调整）" : ""));
                     }
                 }
             }
@@ -1334,39 +1332,51 @@ namespace GameGuard
             return choice;
         }
 
-        // ---------- 通用提示弹窗 ----------
-        public static void ShowNotice(string title, string message, string hint, int seconds, string countdownText)
+        // ---------- Toast 原生通知（Win10/11 通知中心），失败兜底托盘气泡 ----------
+        public static void ShowToast(string title, string body)
         {
-            int remain = seconds;
-            var form = Ui.MakeForm("游戏时间提醒", 360, 190, true);
-            Ui.AddTopBar(form, 360);
-
-            var lblTitle = Ui.MakeLabel(title, 20, 24, 320, 40, 16, true, Ui.Primary, "MiddleCenter");
-            var lblMsg = Ui.MakeLabel(message, 20, 68, 320, 26, 10, false, Ui.TextDark, "MiddleCenter");
-            var lblHint = Ui.MakeLabel(hint, 20, 96, 320, 20, 9, false, Ui.SubText, "MiddleCenter");
-            var lblCount = Ui.MakeLabel(string.Format(countdownText, remain), 20, 118, 320, 20, 9, false, Ui.SubText, "MiddleCenter");
-            var btnOk = Ui.MakeButton("知道了", 125, 142, 110, 34, false, 10);
-
-            form.Controls.AddRange(new Control[] { lblTitle, lblMsg, lblHint, lblCount, btnOk });
-
-            var timer = new System.Windows.Forms.Timer();
-            timer.Interval = 1000;
-            timer.Tick += (s, e) =>
+            Log.Write("Toast：" + title + " | " + body.Replace("\n", " / "));
+            if (TryWinRTToast(title, body)) return;
+            try
             {
-                remain--;
-                if (remain <= 0) { timer.Stop(); form.Close(); }
-                else lblCount.Text = string.Format(countdownText, remain);
-            };
-            btnOk.Click += (s, e) => { timer.Stop(); form.Close(); };
-            form.Shown += (s, e) =>
-            {
-                timer.Start();
-                try { SystemSounds.Exclamation.Play(); } catch { }
-            };
-            form.FormClosed += (s, e) => { timer.Stop(); timer.Dispose(); };
+                if (MainForm.Notify != null && MainForm.Notify.Visible)
+                    MainForm.Notify.ShowBalloonTip(8000, title, body, ToolTipIcon.Info);
+            }
+            catch { }
+        }
 
-            form.ShowDialog();
-            form.Dispose();
+        private static string PsEsc(string s)
+        {
+            return s.Replace("'", "''");
+        }
+
+        private static bool TryWinRTToast(string title, string body)
+        {
+            try
+            {
+                // 经由系统 PowerShell 调用 WinRT Toast API（Win10/11 均内置），EncodedCommand 传参避免转义问题
+                string appId = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+                string ps =
+                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; " +
+                    "$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); " +
+                    "$x = $t.GetElementsByTagName('text'); " +
+                    "$x.Item(0).AppendChild($t.CreateTextNode('" + PsEsc(title) + "')) | Out-Null; " +
+                    "$x.Item(1).AppendChild($t.CreateTextNode('" + PsEsc(body) + "')) | Out-Null; " +
+                    "$n = [Windows.UI.Notifications.ToastNotification]::new($t); " +
+                    "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('" + appId + "').Show($n)";
+                var psi = new System.Diagnostics.ProcessStartInfo();
+                psi.FileName = Environment.GetFolderPath(Environment.SpecialFolder.System) + "\\WindowsPowerShell\\v1.0\\powershell.exe";
+                psi.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand " +
+                    Convert.ToBase64String(Encoding.Unicode.GetBytes(ps));
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                var p = System.Diagnostics.Process.Start(psi);
+                if (p == null) return false;
+                // 等最多 2 秒：出错快速退出 → 气泡兜底；仍在跑 → 视为成功不阻塞
+                if (p.WaitForExit(2000)) return p.ExitCode == 0;
+                return true;
+            }
+            catch { return false; }
         }
 
         // ---------- 手动添加游戏 ----------
@@ -2546,7 +2556,7 @@ namespace GameGuard
             Application.ThreadException += (s, e) =>
                 Log.Write("UI 异常：" + e.Exception.Message);
 
-            // 自检模式：--snap 截图后退出（用于界面核对）
+            // 自检模式：--snap 截图后退出（用于界面核对）；--toast 发送一条测试通知后退出
             if (args != null)
             {
                 foreach (var a in args)
@@ -2554,6 +2564,13 @@ namespace GameGuard
                     if (string.Equals(a, "--snap", StringComparison.OrdinalIgnoreCase))
                     {
                         RunSnap();
+                        return;
+                    }
+                    if (string.Equals(a, "--toast", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Cfg.Load();
+                        UiDialogs.ShowToast("Toast 通知测试", "如果你在屏幕右下角/通知中心看到这条消息，说明原生通知工作正常。");
+                        System.Threading.Thread.Sleep(3000);   // 给 PowerShell 子进程留出发送时间
                         return;
                     }
                 }
