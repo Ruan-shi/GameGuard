@@ -1688,6 +1688,18 @@ namespace GameGuard
             return null;
         }
 
+        // 识别 Steam 协议快捷方式（steam://rungameid/xxx，目标不是 exe）
+        static bool LooksLikeSteamShortcut(string lnkPath)
+        {
+            try
+            {
+                byte[] raw = File.ReadAllBytes(lnkPath);
+                string ascii = Encoding.ASCII.GetString(raw);
+                return ascii.IndexOf("steam://", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch { return false; }
+        }
+
         // ---------- 60 分钟提醒弹窗 ----------
         public static string ShowGuardDialog(int playedMinutes, int remainExtend, string gameName)
         {
@@ -2283,7 +2295,7 @@ namespace GameGuard
             {
                 var files = e.Data.GetData(DataFormats.FileDrop) as string[];
                 if (files == null) return;
-                int added = 0, skipped = 0;
+                int added = 0, updated = 0, skippedDup = 0, unresolved = 0, steamHint = 0;
                 foreach (var f in files)
                 {
                     string target = null;
@@ -2292,7 +2304,12 @@ namespace GameGuard
                         target = ResolveShortcutTarget(f);
                     else if (f.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(f))
                         target = f;
-                    if (string.IsNullOrEmpty(target)) { skipped++; continue; }
+                    if (string.IsNullOrEmpty(target))
+                    {
+                        if (isLnk && LooksLikeSteamShortcut(f)) steamHint++;
+                        else unresolved++;
+                        continue;
+                    }
 
                     string procName = Path.GetFileNameWithoutExtension(target);
                     string gameName = procName;
@@ -2301,28 +2318,40 @@ namespace GameGuard
                         string lnkName = Path.GetFileNameWithoutExtension(f);
                         if (!string.IsNullOrEmpty(lnkName)) gameName = lnkName;
                     }
-                    bool dup = false;
-                    foreach (var g in gTemp)
-                        if (g.Name == gameName)
+
+                    // 同名游戏：改为更新其图标路径（拖入快捷方式 = 给已有游戏补图标）
+                    var sameName = gTemp.FirstOrDefault(g => g.Name == gameName);
+                    if (sameName != null)
+                    {
+                        if (sameName.IconPath != target)
                         {
-                            dup = true; break;
+                            sameName.IconPath = target;
+                            updated++;
                         }
-                        else
-                        {
-                            foreach (var p in g.Processes)
-                                if (p == procName) { dup = true; break; }
-                            if (dup) break;
-                        }
-                    if (dup) { skipped++; continue; }
+                        else skippedDup++;
+                        continue;
+                    }
+
+                    // 进程名重复也视为重复（避免管控进程冲突）
+                    bool dupProc = gTemp.Any(g => g.Processes.Contains(procName));
+                    if (dupProc) { skippedDup++; continue; }
+
                     gTemp.Add(new GameEntry(gameName, new string[] { procName }, new string[0], target));
                     added++;
                 }
                 refresh();
-                if (skipped > 0)
+
+                var parts = new List<string>();
+                if (added > 0) parts.Add(string.Format("新增 {0} 个", added));
+                if (updated > 0) parts.Add(string.Format("为 {0} 个已有游戏更新了图标", updated));
+                if (skippedDup > 0) parts.Add(string.Format("跳过重复 {0} 个", skippedDup));
+                if (unresolved > 0) parts.Add(string.Format("无法解析 {0} 个（快捷方式未指向有效的 .exe）", unresolved));
+                if (steamHint > 0) parts.Add(string.Format("跳过 {0} 个 Steam 协议快捷方式（请改用「从 Steam 库添加」按钮）", steamHint));
+                if (skippedDup + unresolved + steamHint > 0 || updated > 0)
                     MessageBox.Show(form,
-                        string.Format("添加 {0} 个，跳过 {1} 个。\n\n跳过原因：重名/重复，或快捷方式无法解析出有效游戏程序。",
-                            added, skipped),
-                        "拖拽添加", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        "处理结果：\n· " + string.Join("\n· ", parts.ToArray()),
+                        "拖拽添加", MessageBoxButtons.OK,
+                        unresolved + steamHint > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
             };
 
             btnSteam.Click += (s, e) =>
