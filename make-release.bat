@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 > _run_marker.log echo batch started %DATE% %TIME%
 
-set VERSION=1.4.0
+set VERSION=1.5.0
 set DIST=dist\GameGuard-%VERSION%
 
 echo === 1/4 Compiling release exe ===

@@ -28,8 +28,8 @@ using System.Reflection;
 [assembly: AssemblyDescription("轻量 Windows 托盘工具：控制游戏时长与可玩时段")]
 [assembly: AssemblyCompany("GameGuard Project")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyVersion("1.4.0.0")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
 
 namespace GameGuard
 {
