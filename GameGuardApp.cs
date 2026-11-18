@@ -39,11 +39,16 @@ namespace GameGuard
         public string Name = "";
         public string[] Processes = new string[0];
         public string[] PathFilter = new string[0];
+        public string IconPath = "";    // 游戏主程序完整路径（用于提取图标，可空）
 
         public GameEntry() { }
         public GameEntry(string name, string[] procs, string[] filters)
         {
             Name = name; Processes = procs; PathFilter = filters;
+        }
+        public GameEntry(string name, string[] procs, string[] filters, string iconPath)
+        {
+            Name = name; Processes = procs; PathFilter = filters; IconPath = iconPath ?? "";
         }
     }
 
@@ -279,6 +284,7 @@ namespace GameGuard
                         if (gd.TryGetValue("name", out v)) ge.Name = Convert.ToString(v);
                         ge.Processes = GetStringArray(gd, "processes");
                         ge.PathFilter = GetStringArray(gd, "pathFilter");
+                        if (gd.TryGetValue("iconPath", out v)) ge.IconPath = Convert.ToString(v);
                         if (!string.IsNullOrEmpty(ge.Name)) loaded.Add(ge);
                     }
                     if (loaded.Count > 0) Games = loaded;
@@ -354,6 +360,7 @@ namespace GameGuard
                     gd["name"] = g.Name;
                     gd["processes"] = g.Processes;
                     gd["pathFilter"] = g.PathFilter;
+                    if (!string.IsNullOrEmpty(g.IconPath)) gd["iconPath"] = g.IconPath;
                     games.Add(gd);
                 }
                 var root = new Dictionary<string, object>();
@@ -1564,7 +1571,7 @@ namespace GameGuard
                     var sg = new SteamGame();
                     sg.Name = dirName;
                     sg.Exe = exe != null ? Path.GetFileNameWithoutExtension(exe) : "";
-                    sg.Path = dir;
+                    sg.Path = exe != null ? exe : dir;
                     result.Add(sg);
                 }
             }
@@ -1575,6 +1582,112 @@ namespace GameGuard
     // ==================== 对话框 ====================
     public static class UiDialogs
     {
+        // ---------- 游戏图标提取（带缓存） ----------
+        public static class GameIcons
+        {
+            static Dictionary<string, Icon> _cache = new Dictionary<string, Icon>();
+
+            public static Icon Get(GameEntry g)
+            {
+                string key = g.IconPath ?? "";
+                if (key.Length > 0 && _cache.ContainsKey(key))
+                {
+                    Icon ic = _cache[key];
+                    if (ic != null) return ic;
+                }
+                Icon result = null;
+                try
+                {
+                    if (!string.IsNullOrEmpty(g.IconPath) && File.Exists(g.IconPath))
+                        result = Icon.ExtractAssociatedIcon(g.IconPath);
+                }
+                catch { }
+                if (result == null)
+                {
+                    using (var fb = Ui.MakeGuardIcon())
+                    {
+                        result = (Icon)fb.Clone();
+                    }
+                }
+                if (key.Length > 0) _cache[key] = result;
+                return result;
+            }
+
+            public static void Clear()
+            {
+                foreach (var kv in _cache) { try { kv.Value.Dispose(); } catch { } }
+                _cache.Clear();
+            }
+        }
+
+        // ---------- 解析桌面快捷方式（.lnk）真实目标 ----------
+        public static string ResolveShortcutTarget(string lnkPath)
+        {
+            try
+            {
+                // 使用 COM 反射创建 WScript.Shell
+                var shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null) return null;
+                var shell = Activator.CreateInstance(shellType);
+                var createShortcut = shellType.GetMethod("CreateShortcut");
+                if (createShortcut == null) return null;
+                var shortcut = createShortcut.Invoke(shell, new object[] { lnkPath });
+                if (shortcut == null) return null;
+                var targetType = shortcut.GetType();
+                var targetPath = targetType.GetProperty("TargetPath");
+                string tp = targetPath != null ? Convert.ToString(targetPath.GetValue(shortcut, null)) : "";
+                if (string.IsNullOrEmpty(tp) || !File.Exists(tp)) return null;
+                // 指向的是另一个快捷方式（常见于 UWP/特殊安装），尝试再解析一层
+                if (tp.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                    return ResolveShortcutTarget(tp);
+                // 目录快捷方式（游戏文件夹），尝试在文件夹内找主 exe
+                if (!tp.ToLower().EndsWith(".exe"))
+                {
+                    if (Directory.Exists(tp))
+                    {
+                        string found = FindExeInDir(tp, 2);
+                        if (found != null) return found;
+                    }
+                    return null;
+                }
+                return tp;
+            }
+            catch { return null; }
+        }
+
+        static string FindExeInDir(string dir, int depth)
+        {
+            if (depth < 0) return null;
+            string[] files = null;
+            try { files = Directory.GetFiles(dir, "*.exe"); } catch { return null; }
+            // 优先取体积最大的 exe（通常是主程序）
+            string best = null; long bestLen = -1;
+            foreach (var f in files)
+            {
+                try
+                {
+                    var fi = new FileInfo(f);
+                    if (fi.Length > bestLen) { bestLen = fi.Length; best = f; }
+                }
+                catch { }
+            }
+            if (best != null) return best;
+            if (depth > 0)
+            {
+                string[] subs = null;
+                try { subs = Directory.GetDirectories(dir); } catch { }
+                if (subs != null)
+                {
+                    foreach (var s in subs)
+                    {
+                        string found = FindExeInDir(s, depth - 1);
+                        if (found != null) return found;
+                    }
+                }
+            }
+            return null;
+        }
+
         // ---------- 60 分钟提醒弹窗 ----------
         public static string ShowGuardDialog(int playedMinutes, int remainExtend, string gameName)
         {
@@ -2101,29 +2214,51 @@ namespace GameGuard
         public static void ShowGamesDialog(List<GameEntry> gamesSnapshot)
         {
             List<GameEntry> gTemp = gamesSnapshot
-                .Select(g => new GameEntry(g.Name, g.Processes, g.PathFilter)).ToList();
+                .Select(g => new GameEntry(g.Name, g.Processes, g.PathFilter, g.IconPath)).ToList();
 
-            var form = Ui.MakeForm("管理游戏列表", 460, 390, false);
+            var form = Ui.MakeForm("管理游戏列表", 460, 404, false);
             Ui.AddTopBar(form, 460);
 
-            var lblTip = Ui.MakeSection("游戏列表（共用同一套时长规则，任一游戏运行即开始计时）", 20, 18, 420, 24);
+            var lblTip = Ui.MakeSection("游戏列表（共用同一套时长规则 · 支持拖入桌面快捷方式）", 20, 18, 420, 24);
 
             var list = new ListBox();
-            list.Bounds = new Rectangle(Ui.U(20), Ui.U(48), Ui.U(420), Ui.U(216));
+            list.Bounds = new Rectangle(Ui.U(20), Ui.U(48), Ui.U(420), Ui.U(226));
             list.Font = new Font("Microsoft YaHei UI", 10);
+            list.DrawMode = DrawMode.OwnerDrawFixed;
+            list.ItemHeight = 42;
+            list.AllowDrop = true;
+            list.DrawItem += (s, e) =>
+            {
+                if (e.Index < 0) return;
+                var g = (GameEntry)list.Items[e.Index];
+                bool sel = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+                using (var bg = new SolidBrush(sel ? Color.FromArgb(252, 235, 235) : Color.White))
+                    e.Graphics.FillRectangle(bg, e.Bounds);
+                var icon = GameIcons.Get(g);
+                using (var bmp = icon.ToBitmap())
+                    e.Graphics.DrawImage(bmp, e.Bounds.X + 6, e.Bounds.Y + 5, 32, 32);
+                using (var fTitle = new Font("Microsoft YaHei UI", 10, FontStyle.Bold))
+                    TextRenderer.DrawText(e.Graphics, g.Name, fTitle,
+                        new Point(e.Bounds.X + 46, e.Bounds.Y + 4), Ui.TextDark);
+                TextRenderer.DrawText(e.Graphics,
+                    "[" + string.Join(", ", g.Processes) + "]", list.Font,
+                    new Point(e.Bounds.X + 46, e.Bounds.Y + 22), Ui.SubText);
+                e.DrawFocusRectangle();
+            };
 
-            var btnSteam = Ui.MakeButton("从 Steam 库添加", 20, 274, 136, 34, false, 10);
-            var btnManual = Ui.MakeButton("手动添加", 166, 274, 100, 34, false, 10);
-            var btnDel = Ui.MakeButton("删除选中", 276, 274, 100, 34, false, 10);
-            var line = Ui.MakeLine(20, 324, 420);
-            var btnSave = Ui.MakeButton("保存并关闭", 208, 336, 124, 36, true, 10);
-            var btnCancel = Ui.MakeButton("取消", 344, 336, 96, 36, false, 10);
+            var btnSteam = Ui.MakeButton("从 Steam 库添加", 20, 284, 136, 34, false, 10);
+            var btnManual = Ui.MakeButton("手动添加", 166, 284, 100, 34, false, 10);
+            var btnDel = Ui.MakeButton("删除选中", 276, 284, 100, 34, false, 10);
+            var line = Ui.MakeLine(20, 334, 420);
+            var btnSave = Ui.MakeButton("保存并关闭", 208, 346, 124, 36, true, 10);
+            var btnCancel = Ui.MakeButton("取消", 344, 346, 96, 36, false, 10);
 
             Action refresh = () =>
             {
+                list.BeginUpdate();
                 list.Items.Clear();
-                foreach (var g in gTemp)
-                    list.Items.Add(string.Format("{0}    [{1}]", g.Name, string.Join(", ", g.Processes)));
+                foreach (var g in gTemp) list.Items.Add(g);
+                list.EndUpdate();
             };
             refresh();
 
@@ -2139,6 +2274,57 @@ namespace GameGuard
                 refresh();
             };
 
+            // ---------- 拖拽 .lnk / .exe 添加游戏 ----------
+            list.DragEnter += (s, e) =>
+            {
+                if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy;
+            };
+            list.DragDrop += (s, e) =>
+            {
+                var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (files == null) return;
+                int added = 0, skipped = 0;
+                foreach (var f in files)
+                {
+                    string target = null;
+                    bool isLnk = f.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase);
+                    if (isLnk)
+                        target = ResolveShortcutTarget(f);
+                    else if (f.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(f))
+                        target = f;
+                    if (string.IsNullOrEmpty(target)) { skipped++; continue; }
+
+                    string procName = Path.GetFileNameWithoutExtension(target);
+                    string gameName = procName;
+                    if (isLnk)
+                    {
+                        string lnkName = Path.GetFileNameWithoutExtension(f);
+                        if (!string.IsNullOrEmpty(lnkName)) gameName = lnkName;
+                    }
+                    bool dup = false;
+                    foreach (var g in gTemp)
+                        if (g.Name == gameName)
+                        {
+                            dup = true; break;
+                        }
+                        else
+                        {
+                            foreach (var p in g.Processes)
+                                if (p == procName) { dup = true; break; }
+                            if (dup) break;
+                        }
+                    if (dup) { skipped++; continue; }
+                    gTemp.Add(new GameEntry(gameName, new string[] { procName }, new string[0], target));
+                    added++;
+                }
+                refresh();
+                if (skipped > 0)
+                    MessageBox.Show(form,
+                        string.Format("添加 {0} 个，跳过 {1} 个。\n\n跳过原因：重名/重复，或快捷方式无法解析出有效游戏程序。",
+                            added, skipped),
+                        "拖拽添加", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+
             btnSteam.Click += (s, e) =>
             {
                 var picked = ShowPickSteamGames();
@@ -2147,7 +2333,7 @@ namespace GameGuard
                 {
                     if (string.IsNullOrEmpty(pg.Exe)) continue;
                     if (gTemp.Any(g => g.Name == pg.Name)) continue;
-                    gTemp.Add(new GameEntry(pg.Name, new string[] { pg.Exe }, new string[0]));
+                    gTemp.Add(new GameEntry(pg.Name, new string[] { pg.Exe }, new string[0], pg.Path));
                 }
                 refresh();
             };
