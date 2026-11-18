@@ -2701,7 +2701,7 @@ namespace GameGuard
             var numMax = Ui.MakeNumber(294, 348, 74, 0, 10, Cfg.MaxExtend);
             var lblUnitMax = Ui.MakeRowLabel("次", 374, 348, 26, 9, false, Ui.SubText, "MiddleLeft");
 
-            var cbStackTip = Ui.MakeLabel("三种模式可同时勾选、叠加生效，至少保留一种\n上调规则：每个数字每天只能上调 1 次，上调 ≥30 分钟需确认，下调不限", 20, 384, 380, 34, 9, false, Ui.SubText, "MiddleLeft");
+            var cbStackTip = Ui.MakeLabel("三种模式可同时勾选、叠加生效，至少保留一种\n上调规则：每个数字每天只能上调 1 次，≥30 分钟需确认，下调不限", 20, 384, 380, 34, 9, false, Ui.SubText, "MiddleLeft");
             var line4 = Ui.MakeLine(20, 420, 380);
 
             var secC = Ui.MakeSection("每日配额", 20, 424, 380, 26);
@@ -2719,8 +2719,8 @@ namespace GameGuard
             var btnTemp = Ui.MakeButton("临时调整今天", 152, 520, 120, 34, false, 10);
             var btnPause = Ui.MakeButton("暂停 1 小时", 284, 520, 116, 34, false, 10);
             var btnKill = Ui.MakeButton("立即结束游戏", 20, 562, 120, 34, false, 10);
-            var btnExit = Ui.MakeButton("退出程序", 152, 562, 100, 34, false, 10);
-            var btnStats = Ui.MakeButton("本周统计", 262, 562, 118, 34, false, 10);
+            var btnExit = Ui.MakeButton("退出程序", 152, 562, 120, 34, false, 10);
+            var btnStats = Ui.MakeButton("本周统计", 284, 562, 116, 34, false, 10);
             var line5 = Ui.MakeLine(20, 606, 380);
 
             var lblTip = Ui.MakeLabel("改完点保存生效", 20, 619, 130, 26, 9, false, Ui.SubText, "MiddleLeft");
