@@ -2443,32 +2443,10 @@ namespace GameGuard
     {
         public static NotifyIcon Notify;
         public static ToolStripMenuItem ItemStatus;
-        public static ToolStripMenuItem ItemModeSched;
-        public static ToolStripMenuItem ItemModeCont;
-        public static ToolStripMenuItem ItemModeQuota;
-        public static ToolStripMenuItem ItemTempToday;
-        public static ToolStripMenuItem ItemTempClear;
 
         public static void UpdateTrayMenuText()
         {
-            ItemModeSched.Text = string.Format("固定时段（{0} - {1}）", Cfg.ScheduleStart, Cfg.ScheduleEnd);
-            ItemModeSched.Checked = Cfg.UseSchedule;
-            ItemModeCont.Checked = Cfg.UseContinuous;
-            ItemModeQuota.Text = string.Format("每日配额（{0} 分钟/天）", Cfg.QuotaMinutes);
-            ItemModeQuota.Checked = Cfg.UseQuota;
-
-            string todayKey = DateTime.Now.ToString("yyyy-MM-dd");
-            if (Cfg.TempDate == todayKey && !string.IsNullOrEmpty(Cfg.TempStart) && !string.IsNullOrEmpty(Cfg.TempEnd))
-            {
-                ItemTempToday.Text = string.Format("临时调整今天（今日 {0} - {1}）", Cfg.TempStart, Cfg.TempEnd);
-                ItemTempClear.Enabled = true;
-            }
-            else
-            {
-                ItemTempToday.Text = "临时调整今天...";
-                ItemTempClear.Enabled = false;
-            }
-
+            // 右键菜单已精简为仅退出，这里只维护托盘悬浮文字
             try
             {
                 Notify.Text = "游戏时长守卫（" + Cfg.ModeName + "）";
@@ -2544,46 +2522,17 @@ namespace GameGuard
 
             var menu = new ContextMenuStrip();
 
+            // 右键菜单仅保留：状态显示（只读）+ 退出。全部设置功能集中在左键控制面板
             ItemStatus = new ToolStripMenuItem("状态：等待游戏启动");
             ItemStatus.Enabled = false;
             menu.Items.Add(ItemStatus);
-            menu.Items.Add(new ToolStripSeparator());
-
-            var itemPanel = new ToolStripMenuItem("打开控制面板...");
-            itemPanel.Font = new Font("Microsoft YaHei UI", 9, FontStyle.Bold);
-            menu.Items.Add(itemPanel);
-
-            var menuMode = new ToolStripMenuItem("启用模式（可多选）");
-            ItemModeSched = new ToolStripMenuItem("固定时段");
-            ItemModeCont = new ToolStripMenuItem("连续时长（60 分钟 + 续期）");
-            ItemModeQuota = new ToolStripMenuItem("每日配额（120 分钟/天）");
-            ItemModeSched.CheckOnClick = true;
-            ItemModeCont.CheckOnClick = true;
-            ItemModeQuota.CheckOnClick = true;
-            menuMode.DropDownItems.Add(ItemModeSched);
-            menuMode.DropDownItems.Add(ItemModeCont);
-            menuMode.DropDownItems.Add(ItemModeQuota);
-            menu.Items.Add(menuMode);
-
-            ItemTempToday = new ToolStripMenuItem("临时调整今天...");
-            ItemTempClear = new ToolStripMenuItem("清除临时调整");
-            menu.Items.Add(ItemTempToday);
-            menu.Items.Add(ItemTempClear);
-            var itemStats = new ToolStripMenuItem("本周统计...");
-            menu.Items.Add(itemStats);
-            menu.Items.Add(new ToolStripSeparator());
-
-            var itemPause = new ToolStripMenuItem("暂停管控（1 小时）");
-            var itemKillNow = new ToolStripMenuItem("立即结束游戏");
-            menu.Items.Add(itemPause);
-            menu.Items.Add(itemKillNow);
             menu.Items.Add(new ToolStripSeparator());
 
             var itemExit = new ToolStripMenuItem("退出程序");
             menu.Items.Add(itemExit);
             Notify.ContextMenuStrip = menu;
 
-            // 左键点击 → 主控制面板；右键保留快捷菜单
+            // 左键点击 → 主控制面板；右键仅退出
             Notify.MouseClick += (s, e) =>
             {
                 if (e.Button == MouseButtons.Left)
@@ -2598,77 +2547,6 @@ namespace GameGuard
                 {
                     try { PanelWindow.ShowPanel(); } catch { }
                 }
-            };
-            itemPanel.Click += (s, e) => { try { PanelWindow.ShowPanel(); } catch { } };
-
-            // 托盘模式开关：可多选叠加；取消最后一项时阻止
-            ItemModeSched.Click += (s, e) =>
-            {
-                if (!ItemModeSched.Checked && !Cfg.UseContinuous && !Cfg.UseQuota)
-                {
-                    ItemModeSched.Checked = true;
-                    MessageBox.Show("至少需要启用一种模式。", "游戏时长守卫");
-                    return;
-                }
-                Cfg.UseSchedule = ItemModeSched.Checked;
-                Engine.DueTime = null; Engine.RoundStart = null;
-                Engine.ExtendUsed = 0; Engine.WarnKey = null;
-                Cfg.Save();
-                UpdateTrayMenuText();
-                Log.Write("模式调整：现为 " + Cfg.ModeName);
-            };
-            ItemModeCont.Click += (s, e) =>
-            {
-                if (!ItemModeCont.Checked && !Cfg.UseSchedule && !Cfg.UseQuota)
-                {
-                    ItemModeCont.Checked = true;
-                    MessageBox.Show("至少需要启用一种模式。", "游戏时长守卫");
-                    return;
-                }
-                Cfg.UseContinuous = ItemModeCont.Checked;
-                Engine.DueTime = null; Engine.RoundStart = null;
-                Engine.ExtendUsed = 0; Engine.WarnKey = null;
-                Cfg.Save();
-                UpdateTrayMenuText();
-                Log.Write("模式调整：现为 " + Cfg.ModeName);
-            };
-            ItemModeQuota.Click += (s, e) =>
-            {
-                if (!ItemModeQuota.Checked && !Cfg.UseSchedule && !Cfg.UseContinuous)
-                {
-                    ItemModeQuota.Checked = true;
-                    MessageBox.Show("至少需要启用一种模式。", "游戏时长守卫");
-                    return;
-                }
-                Cfg.UseQuota = ItemModeQuota.Checked;
-                Engine.DueTime = null; Engine.RoundStart = null;
-                Engine.ExtendUsed = 0; Engine.WarnKey = null;
-                Cfg.Save();
-                UpdateTrayMenuText();
-                Log.Write("模式调整：现为 " + Cfg.ModeName);
-            };
-
-            ItemTempToday.Click += (s, e) => { UiDialogs.ShowTempDialog(); };
-            ItemTempClear.Click += (s, e) =>
-            {
-                Cfg.TempDate = ""; Cfg.TempStart = ""; Cfg.TempEnd = "";
-                Cfg.TempQuotaMin = 0;
-                Engine.WarnKey = null;
-                Cfg.Save();
-                UpdateTrayMenuText();
-                Log.Write("已清除今日临时调整，恢复常规时段");
-            };
-
-            itemPause.Click += (s, e) => { Engine.PauseOneHour(); };
-            itemStats.Click += (s, e) =>
-            {
-                try { UiDialogs.ShowStatsDialog(); }
-                catch (Exception ex) { Log.Write("打开统计失败：" + ex.Message); }
-            };
-            itemKillNow.Click += (s, e) =>
-            {
-                foreach (var p in Engine.GetGameProcesses()) { try { p.Kill(); } catch { } }
-                Log.Write("用户通过托盘立即结束游戏");
             };
             itemExit.Click += (s, e) =>
             {
