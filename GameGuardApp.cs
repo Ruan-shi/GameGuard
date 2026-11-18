@@ -2308,7 +2308,7 @@ namespace GameGuard
             list.Bounds = new Rectangle(Ui.U(20), Ui.U(48), Ui.U(420), Ui.U(226));
             list.Font = new Font("Microsoft YaHei UI", 10);
             list.DrawMode = DrawMode.OwnerDrawFixed;
-            list.ItemHeight = 42;
+            list.ItemHeight = 38;
             list.AllowDrop = true;
             list.DrawItem += (s, e) =>
             {
@@ -2319,13 +2319,18 @@ namespace GameGuard
                     e.Graphics.FillRectangle(bg, e.Bounds);
                 var icon = GameIcons.Get(g);
                 using (var bmp = icon.ToBitmap())
-                    e.Graphics.DrawImage(bmp, e.Bounds.X + 6, e.Bounds.Y + 5, 32, 32);
+                    e.Graphics.DrawImage(bmp, e.Bounds.X + 6, e.Bounds.Y + (e.Bounds.Height - 32) / 2, 32, 32);
+                // 游戏名（粗体）+ 进程名（灰色小字）同行显示
                 using (var fTitle = new Font("Microsoft YaHei UI", 10, FontStyle.Bold))
+                {
+                    string procs = "[" + string.Join(", ", g.Processes) + "]";
+                    var sz = TextRenderer.MeasureText(e.Graphics, g.Name, fTitle);
+                    int ty = e.Bounds.Y + (e.Bounds.Height - sz.Height) / 2;
                     TextRenderer.DrawText(e.Graphics, g.Name, fTitle,
-                        new Point(e.Bounds.X + 46, e.Bounds.Y + 4), Ui.TextDark);
-                TextRenderer.DrawText(e.Graphics,
-                    "[" + string.Join(", ", g.Processes) + "]", list.Font,
-                    new Point(e.Bounds.X + 46, e.Bounds.Y + 22), Ui.SubText);
+                        new Point(e.Bounds.X + 46, ty), Ui.TextDark);
+                    TextRenderer.DrawText(e.Graphics, procs, list.Font,
+                        new Point(e.Bounds.X + 46 + sz.Width + 6, ty + 2), Ui.SubText);
+                }
                 e.DrawFocusRectangle();
             };
 
