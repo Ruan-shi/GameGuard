@@ -113,6 +113,73 @@ namespace GameGuard
         public static string ConfigPath = "";
         public static string PauseFlag = "";
 
+        // ---- 防手改：config.json 校验和 + 备份 ----
+        public static string ConfigSumPath = "";    // 校验和文件
+        public static string ConfigBakPath = "";    // 最近一次合法保存的备份
+        public static bool TamperRestored = false;  // 启动时曾从备份恢复（用于提示）
+        public static bool TamperReset = false;     // 配置被改且无有效备份，已重置默认
+        private const string CfgSalt = "GameGuard::cfg::v1::";
+
+        private static string CfgBakPath { get { return ConfigBakPath.Length > 0 ? ConfigBakPath : ConfigPath + ".bak.json"; } }
+        private static string CfgSumPath { get { return ConfigSumPath.Length > 0 ? ConfigSumPath : ConfigPath + ".sum"; } }
+
+        private static string ComputeFileSum(string path)
+        {
+            byte[] salt = Encoding.UTF8.GetBytes(CfgSalt);
+            byte[] body = File.ReadAllBytes(path);
+            byte[] all = new byte[salt.Length + body.Length];
+            Array.Copy(salt, 0, all, 0, salt.Length);
+            Array.Copy(body, 0, all, salt.Length, body.Length);
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                return BitConverter.ToString(sha.ComputeHash(all)).Replace("-", "").ToLower();
+            }
+        }
+
+        // 加载前校验：篡改 → 尽量从备份恢复；无有效备份 → 重置默认并留档
+        // 返回 true = 继续按正常流程解析 config.json
+        private static bool VerifyConfigIntegrity()
+        {
+            try
+            {
+                if (!File.Exists(CfgSumPath))
+                {
+                    // 首次启用校验：采纳现状作为基线（老用户无感升级）
+                    File.WriteAllText(CfgSumPath, ComputeFileSum(ConfigPath), Encoding.ASCII);
+                    Log.Write("已为 config.json 建立校验基线");
+                    return true;
+                }
+                string expect = File.ReadAllText(CfgSumPath, Encoding.ASCII).Trim();
+                if (ComputeFileSum(ConfigPath) == expect) return true;
+
+                Log.Write("检测到 config.json 被外部修改（校验和不匹配）");
+                if (File.Exists(CfgBakPath))
+                {
+                    bool bakValid = false;
+                    try { bakValid = ComputeFileSum(CfgBakPath) == expect; } catch { }
+                    if (bakValid)
+                    {
+                        File.Copy(CfgBakPath, ConfigPath, true);
+                        TamperRestored = true;
+                        Log.Write("配置已从 config.bak.json 恢复");
+                        return true;
+                    }
+                }
+                // 无有效备份：留档被改文件，重置默认
+                try { File.Copy(ConfigPath, ConfigPath + ".bad", true); } catch { }
+                try { File.Delete(CfgSumPath); } catch { }
+                TamperReset = true;
+                Log.Write("无有效备份，配置已重置为默认值（原文件留存为 config.json.bad）");
+                Save();   // 重新生成默认配置 + 备份 + 校验
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Write("配置完整性检查异常：" + ex.Message);
+                return true;
+            }
+        }
+
         public static void Load()
         {
             if (!File.Exists(ConfigPath))
@@ -121,6 +188,10 @@ namespace GameGuard
                 Save();
                 return;
             }
+
+            // ---- 防手改校验：被篡改时内部已完成恢复/重置 ----
+            if (!VerifyConfigIntegrity()) return;
+
             try
             {
                 var ser = new JavaScriptSerializer();
@@ -311,6 +382,13 @@ namespace GameGuard
                 root["tempStart"] = TempStart;
                 root["tempEnd"] = TempEnd;
                 File.WriteAllText(ConfigPath, ser.Serialize(root), new UTF8Encoding(false));
+                // 维护备份与校验和（防手改）
+                try
+                {
+                    File.Copy(ConfigPath, CfgBakPath, true);
+                    File.WriteAllText(CfgSumPath, ComputeFileSum(ConfigPath), Encoding.ASCII);
+                }
+                catch { }
                 Log.Write("配置已保存到 config.json");
             }
             catch (Exception ex)
@@ -346,6 +424,87 @@ namespace GameGuard
         private static Dictionary<string, double> _pending = new Dictionary<string, double>();   // 每个游戏未落盘的秒数
 
         private static string CsvPath { get { return Path.Combine(Cfg.ScriptDir, "usage.csv"); } }
+        private static string BakPath { get { return Path.Combine(Cfg.ScriptDir, "usage.bak.csv"); } }
+        private static string SumPath { get { return Path.Combine(Cfg.ScriptDir, "usage.sum"); } }
+        private static string BakSumPath { get { return Path.Combine(Cfg.ScriptDir, "usage.bak.sum"); } }
+        private const string UsageSalt = "GameGuard::usage::v1::";
+
+        // 链式哈希：h(N) = SHA256(h(N-1) + "|" + 第N行)，任意一行被删改都会导致整条链对不上
+        private static string ChainStep(string prev, string line)
+        {
+            byte[] data = Encoding.UTF8.GetBytes(prev + "|" + line);
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                return BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "").ToLower();
+            }
+        }
+
+        private static string ComputeChain(string path)
+        {
+            string h = UsageSalt;
+            foreach (var ln in File.ReadAllLines(path, Encoding.UTF8))
+            {
+                if (ln.Trim().Length == 0) continue;
+                h = ChainStep(h, ln);
+            }
+            return h;
+        }
+
+        // 完整性状态：fresh=尚无记录 / ok / missing=csv 缺失但校验存在 / mismatch=内容对不上
+        private static string CheckIntegrity()
+        {
+            bool hasCsv = File.Exists(CsvPath);
+            bool hasSum = File.Exists(SumPath);
+            if (!hasCsv && !hasSum) return "fresh";
+            if (hasCsv && !hasSum)
+            {
+                // 首次启用校验：采纳现状作为基线
+                File.WriteAllText(SumPath, ComputeChain(CsvPath), Encoding.ASCII);
+                Log.Write("已为 usage.csv 建立校验基线");
+                return "ok";
+            }
+            if (!hasCsv) return "missing";
+            return ComputeChain(CsvPath) == File.ReadAllText(SumPath, Encoding.ASCII).Trim() ? "ok" : "mismatch";
+        }
+
+        // 启动与统计前调用：能恢复则从镜像备份恢复
+        // 返回 ok / restored / damaged
+        public static string VerifyAndRepair()
+        {
+            try
+            {
+                string v = CheckIntegrity();
+                if (v == "ok" || v == "fresh") return "ok";
+                Log.Write("使用记录完整性异常：" + v);
+
+                bool bakOk = false;
+                try
+                {
+                    bakOk = File.Exists(BakPath) && File.Exists(BakSumPath) &&
+                            ComputeChain(BakPath) == File.ReadAllText(BakSumPath, Encoding.ASCII).Trim();
+                }
+                catch { }
+                if (bakOk)
+                {
+                    File.Copy(BakPath, CsvPath, true);
+                    File.Copy(BakSumPath, SumPath, true);
+                    Log.Write("使用记录已从 usage.bak.csv 恢复");
+                    return "restored";
+                }
+
+                // 主文件与备份都无法通过校验：留档后重新开始
+                try
+                {
+                    if (File.Exists(CsvPath)) File.Copy(CsvPath, Path.Combine(Cfg.ScriptDir, "usage.bad.csv"), true);
+                    File.Delete(CsvPath);
+                    File.Delete(SumPath);
+                }
+                catch { }
+                Log.Write("使用记录无法恢复，已重新开始记录（损坏文件留存为 usage.bad.csv）");
+                return "damaged";
+            }
+            catch { return "ok"; }
+        }
 
         // 每次轮询调用：游戏运行中就累计真实时间差（断档 >120 秒视为睡眠，不计）
         // 多游戏并行运行时，本轮时间均摊给每个运行中的游戏
@@ -407,6 +566,10 @@ namespace GameGuard
             {
                 File.AppendAllText(CsvPath,
                     today + "," + gname + "," + mins + Environment.NewLine, Encoding.UTF8);
+                // 维护链式校验与镜像备份（防删改）
+                File.WriteAllText(SumPath, ComputeChain(CsvPath), Encoding.ASCII);
+                File.Copy(CsvPath, BakPath, true);
+                File.Copy(SumPath, BakSumPath, true);
             }
             catch { }
         }
@@ -1591,6 +1754,10 @@ namespace GameGuard
         // ---------- 本周统计 ----------
         public static void ShowStatsDialog()
         {
+            // 防删改校验：必要时先从镜像备份恢复
+            string integrity = "ok";
+            try { integrity = Usage.VerifyAndRepair(); } catch { }
+
             // 读 usage.csv（每行：日期,游戏,分钟），聚合出每日、每游戏与今日时长
             var dayMin = new Dictionary<string, int>();
             var gameMin = new Dictionary<string, int>();
@@ -1689,6 +1856,10 @@ namespace GameGuard
             sorted.Sort((a, b) => b.Value.CompareTo(a.Value));
             if (sorted.Count == 0)
                 list.Items.Add("还没有使用记录——游戏运行满 1 分钟后这里会出现数据");
+            if (integrity == "restored")
+                list.Items.Add("！使用记录曾被删改，已自动从备份恢复");
+            if (integrity == "damaged")
+                list.Items.Add("！使用记录损坏且无法恢复，已重新开始记录（原文件留存为 usage.bad.csv）");
             foreach (var kv in sorted)
             {
                 string row = string.Format("{0}    合计 {1} 小时 {2} 分", kv.Key, kv.Value / 60, kv.Value % 60);
@@ -2337,6 +2508,9 @@ namespace GameGuard
             }
             catch { }
 
+            // 使用记录完整性检查（防删改，能恢复则恢复）
+            try { Usage.VerifyAndRepair(); } catch { }
+
             Notify = new NotifyIcon();
             try
             {
@@ -2354,6 +2528,13 @@ namespace GameGuard
                 string tipText = (tips.Count > 0 ? string.Join("；", tips.ToArray()) : "未启用任何模式")
                     + "。左键点击图标打开控制面板。";
                 Notify.ShowBalloonTip(4000, "游戏时长守卫已启动", tipText, ToolTipIcon.Info);
+                // 防手改结果的启动提示
+                if (Cfg.TamperRestored)
+                    UiDialogs.ShowToast("配置已恢复",
+                        "检测到 config.json 被外部修改，已自动恢复为最近一次保存的配置。");
+                else if (Cfg.TamperReset)
+                    UiDialogs.ShowToast("配置已重置",
+                        "检测到 config.json 被外部修改且无有效备份，已重置为默认配置（原文件留存为 config.json.bad）。");
             }
             catch (Exception ex)
             {
@@ -2572,6 +2753,8 @@ namespace GameGuard
             Cfg.ScriptDir = Path.GetDirectoryName(exe);
             Cfg.LogPath = Path.Combine(Cfg.ScriptDir, "gameguard.log");
             Cfg.ConfigPath = Path.Combine(Cfg.ScriptDir, "config.json");
+            Cfg.ConfigSumPath = Path.Combine(Cfg.ScriptDir, "config.sum");
+            Cfg.ConfigBakPath = Path.Combine(Cfg.ScriptDir, "config.bak.json");
             Cfg.PauseFlag = Path.Combine(Cfg.ScriptDir, "paused.flag");
 
             Application.EnableVisualStyles();

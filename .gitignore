@@ -11,6 +11,13 @@ config.json
 paused.flag
 usage.csv
 watchdog_off.flag
+config.sum
+config.bak.json
+config.json.bad
+usage.sum
+usage.bak.csv
+usage.bak.sum
+usage.bad.csv
 panel_check.png
 *_snap.png
 selftest.png
