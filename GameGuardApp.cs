@@ -814,6 +814,20 @@ namespace GameGuard
             return p;
         }
 
+        // 分组标题带：浅灰底 + 红色标题字，用于界面分区（视觉分组感）
+        public static Label MakeSection(string text, int x, int y, int w, int h)
+        {
+            var lbl = new Label();
+            lbl.Text = text;
+            lbl.Font = Base(10, true);
+            lbl.ForeColor = Primary;
+            lbl.BackColor = Color.FromArgb(246, 246, 248);
+            lbl.Padding = new Padding(8, 0, 0, 0);
+            lbl.TextAlign = ContentAlignment.MiddleLeft;
+            lbl.Bounds = new Rectangle(U(x), U(y), U(w), U(h));
+            return lbl;
+        }
+
         public static DateTimePicker MakeTimePicker(int x, int y, int w, string value)
         {
             var d = new DateTimePicker();
@@ -1769,7 +1783,7 @@ namespace GameGuard
             var numQuota = Ui.MakeNumber(90, 92, 74, 0, 1440, Cfg.TempQuotaMin);
             var lblUnitQ = Ui.MakeLabel("分钟", 170, 95, 40, 26, 9, false, Ui.SubText, "MiddleLeft");
             var lblQTip = Ui.MakeLabel("0 = 不调整配额（只调时段）", 216, 95, 170, 26, 9, false, Ui.SubText, "MiddleLeft");
-            var lblTip = Ui.MakeLabel("仅对今天生效，明天自动恢复常规时段", 20, 22, 360, 22, 9, false, Ui.SubText, "MiddleLeft");
+            var lblTip = Ui.MakeSection("临时调整（仅对今天生效，明天自动恢复）", 20, 20, 360, 24);
             var btnSave = Ui.MakeButton("今天就这样", 152, 164, 116, 36, true, 10);
             var btnCancel = Ui.MakeButton("取消", 280, 164, 100, 36, false, 10);
 
@@ -1904,7 +1918,7 @@ namespace GameGuard
             }
             catch { }
 
-            var form = Ui.MakeForm("本周游戏统计", 460, 560, false);
+            var form = Ui.MakeForm("本周游戏统计", 460, 590, false);
             Ui.AddTopBar(form, 460);
 
             // 事件统计：续期 / 上调 / 拦截 / 强制结束
@@ -2022,8 +2036,9 @@ namespace GameGuard
             rb30.CheckedChanged += (s, e) => { if (rb30.Checked) { range = 30; updateSummary(); pic.Invalidate(); } };
 
             // 每个游戏合计
+            var bandGame = Ui.MakeSection("各游戏合计", 20, 262, 420, 24);
             var list = new ListBox();
-            list.Bounds = new Rectangle(Ui.U(20), Ui.U(262), Ui.U(420), Ui.U(84));
+            list.Bounds = new Rectangle(Ui.U(20), Ui.U(290), Ui.U(420), Ui.U(76));
             list.Font = new Font("Microsoft YaHei UI", 9);
             list.BorderStyle = BorderStyle.FixedSingle;
             var sorted = new List<KeyValuePair<string, int>>(gameMin);
@@ -2041,16 +2056,16 @@ namespace GameGuard
                 if (td > 0) row += string.Format("  ·  今日 {0} 分", td);
                 list.Items.Add(row);
             }
+            form.Controls.Add(bandGame);
             form.Controls.Add(list);
 
             // 近 7 天事件
-            var lblEvents = Ui.MakeLabel(string.Format(
+            var bandEv = Ui.MakeSection(string.Format(
                 "本周事件：续期 {0} 次 · 上调 {1} 次 · 拦截 {2} 次 · 强制结束 {3} 次",
-                nRenew, nUp, nBlock, nKill),
-                20, 352, 420, 22, 10, true, Ui.TextDark, "MiddleLeft");
+                nRenew, nUp, nBlock, nKill), 20, 372, 420, 24);
 
             var evList = new ListBox();
-            evList.Bounds = new Rectangle(Ui.U(20), Ui.U(376), Ui.U(420), Ui.U(118));
+            evList.Bounds = new Rectangle(Ui.U(20), Ui.U(400), Ui.U(420), Ui.U(112));
             evList.Font = new Font("Microsoft YaHei UI", 8.5f);
             evList.BorderStyle = BorderStyle.FixedSingle;
             if (evts.Count == 0)
@@ -2063,10 +2078,10 @@ namespace GameGuard
             }
             form.Controls.Add(evList);
 
-            var line = Ui.MakeLine(20, 502, 420);
-            var btnClose = Ui.MakeButton("关闭", 340, 508, 100, 36, false, 10);
+            var line = Ui.MakeLine(20, 520, 420);
+            var btnClose = Ui.MakeButton("关闭", 340, 528, 100, 36, false, 10);
             btnClose.Click += (s, e) => form.Close();
-            form.Controls.AddRange(new Control[] { lblSummary, lblEvents, line, btnClose });
+            form.Controls.AddRange(new Control[] { lblSummary, bandEv, line, btnClose });
 
             form.ShowDialog();
             form.Dispose();
@@ -2081,8 +2096,7 @@ namespace GameGuard
             var form = Ui.MakeForm("管理游戏列表", 460, 390, false);
             Ui.AddTopBar(form, 460);
 
-            var lblTip = Ui.MakeLabel("下列游戏共用同一套时长规则：任一游戏运行即开始计时",
-                20, 20, 420, 22, 9, false, Ui.SubText, "MiddleLeft");
+            var lblTip = Ui.MakeSection("游戏列表（共用同一套时长规则，任一游戏运行即开始计时）", 20, 18, 420, 24);
 
             var list = new ListBox();
             list.Bounds = new Rectangle(Ui.U(20), Ui.U(48), Ui.U(420), Ui.U(216));
@@ -2342,7 +2356,7 @@ namespace GameGuard
             var cbQuota = Ui.MakeCheck("每日配额", 270, 100, 110, 28, Cfg.UseQuota);
             var line2 = Ui.MakeLine(20, 136, 380);
 
-            var secA = Ui.MakeLabel("可玩时段", 20, 142, 200, 22, 10.5, true, Ui.TextDark, "MiddleLeft");
+            var secA = Ui.MakeSection("可玩时段", 20, 140, 380, 26);
 
             // 栅格：标签列 20..98（右对齐），输入列从 104 开始；第二列标签右边缘 288，输入从 294 开始
             var lbl1 = Ui.MakeLabel("开始时间", 20, 171, 78, 26, 10, false, Ui.TextDark, "MiddleRight");
@@ -2366,7 +2380,7 @@ namespace GameGuard
             }
             var line3 = Ui.MakeLine(20, 280, 380);
 
-            var secB = Ui.MakeLabel("连续时长", 20, 286, 200, 22, 10.5, true, Ui.TextDark, "MiddleLeft");
+            var secB = Ui.MakeSection("连续时长", 20, 284, 380, 26);
 
             var lblPlay = Ui.MakeLabel("连续时长", 20, 315, 78, 26, 10, false, Ui.TextDark, "MiddleRight");
             var numPlay = Ui.MakeNumber(104, 312, 74, 5, 480, Cfg.PlayMinutes);
@@ -2382,7 +2396,7 @@ namespace GameGuard
             var cbStackTip = Ui.MakeLabel("三种模式可同时勾选、叠加生效，至少保留一种\n上调规则：每个数字每天只能上调 1 次，上调 ≥30 分钟需确认，下调不限", 20, 384, 380, 34, 9, false, Ui.SubText, "MiddleLeft");
             var line4 = Ui.MakeLine(20, 420, 380);
 
-            var secC = Ui.MakeLabel("每日配额", 20, 426, 200, 22, 10.5, true, Ui.TextDark, "MiddleLeft");
+            var secC = Ui.MakeSection("每日配额", 20, 424, 380, 26);
 
             var lblQuota = Ui.MakeLabel("每日配额", 20, 455, 78, 26, 10, false, Ui.TextDark, "MiddleRight");
             var numQuota = Ui.MakeNumber(104, 452, 74, 5, 1440, Cfg.QuotaMinutes);
