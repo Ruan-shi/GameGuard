@@ -1627,15 +1627,17 @@ namespace GameGuard
             {
                 // 使用 COM 反射创建 WScript.Shell
                 var shellType = Type.GetTypeFromProgID("WScript.Shell");
-                if (shellType == null) return null;
+                if (shellType == null) return FallbackLnkPath(lnkPath);
                 var shell = Activator.CreateInstance(shellType);
                 var createShortcut = shellType.GetMethod("CreateShortcut");
-                if (createShortcut == null) return null;
+                if (createShortcut == null) return FallbackLnkPath(lnkPath);
                 var shortcut = createShortcut.Invoke(shell, new object[] { lnkPath });
-                if (shortcut == null) return null;
+                if (shortcut == null) return FallbackLnkPath(lnkPath);
                 var targetType = shortcut.GetType();
                 var targetPath = targetType.GetProperty("TargetPath");
                 string tp = targetPath != null ? Convert.ToString(targetPath.GetValue(shortcut, null)) : "";
+                if (string.IsNullOrEmpty(tp))
+                    tp = FallbackLnkPath(lnkPath);
                 if (string.IsNullOrEmpty(tp)) return null;
                 // 部分快捷方式存的是相对路径（如 .\..\..\xxx\game.exe），
                 // 需按 lnk 所在目录（或其工作目录字段）展开成绝对路径再判断
@@ -1655,11 +1657,61 @@ namespace GameGuard
                             tp = cand;
                     }
                 }
-                if (!File.Exists(tp)) return null;
-                // 指向的是另一个快捷方式（常见于 UWP/特殊安装），尝试再解析一层
-                if (tp.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                // 指向的是另一个快捷方式（常见于特殊安装），尝试再解析一层
+                if (tp.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) && File.Exists(tp))
                     return ResolveShortcutTarget(tp);
-                // 目录快捷方式（游戏文件夹），尝试在文件夹内找主 exe
+                if (!tp.ToLower().EndsWith(".exe"))
+                {
+                    // 目录快捷方式（游戏文件夹），尝试在文件夹内找主 exe
+                    if (Directory.Exists(tp))
+                    {
+                        string found = FindExeInDir(tp, 2);
+                        if (found != null) return found;
+                    }
+                    return null;
+                }
+                // 目标 exe 即使当前不存在也接受：进程名仍可用于管控，图标走兜底
+                return tp;
+            }
+            catch { return FallbackLnkPath(lnkPath); }
+        }
+
+        // 脚本宿主解析失败时，直接从 lnk 二进制里读 LinkInfo.LocalBasePath / CommonPathSuffix
+        static string FallbackLnkPath(string lnkPath)
+        {
+            try
+            {
+                byte[] d = File.ReadAllBytes(lnkPath);
+                if (d.Length < 76) return null;
+                int flags = BitConverter.ToInt32(d, 20);
+                int off = 76;
+                if ((flags & 1) != 0)
+                {
+                    short idl = BitConverter.ToInt16(d, off);
+                    off += 2 + idl;
+                    if (off + 4 > d.Length) return null;
+                }
+                if ((flags & 2) == 0 || off + 28 > d.Length) return null;
+                int liSize = BitConverter.ToInt32(d, off);
+                int lbpOff = BitConverter.ToInt32(d, off + 16);
+                int cpsOff = BitConverter.ToInt32(d, off + 24);
+                string lbp = null, cps = null;
+                if (lbpOff > 0 && off + lbpOff < d.Length)
+                {
+                    int b = off + lbpOff;
+                    int e = Array.IndexOf(d, (byte)0, b);
+                    if (e > b) lbp = Encoding.Default.GetString(d, b, e - b);
+                }
+                if (cpsOff > 0 && off + cpsOff < d.Length)
+                {
+                    int b = off + cpsOff;
+                    int e = Array.IndexOf(d, (byte)0, b);
+                    if (e > b) cps = Encoding.Default.GetString(d, b, e - b);
+                }
+                string tp = !string.IsNullOrEmpty(lbp) ? lbp : cps;
+                if (string.IsNullOrEmpty(tp)) return null;
+                if (!Path.IsPathRooted(tp)) return null;
+                // 指向游戏文件夹时在目录内找主 exe
                 if (!tp.ToLower().EndsWith(".exe"))
                 {
                     if (Directory.Exists(tp))
@@ -2314,7 +2366,8 @@ namespace GameGuard
             {
                 var files = e.Data.GetData(DataFormats.FileDrop) as string[];
                 if (files == null) return;
-                int added = 0, updated = 0, skippedDup = 0, unresolved = 0, steamHint = 0;
+                int added = 0, updated = 0, skippedDup = 0, steamHint = 0;
+                var failedNames = new List<string>();
                 foreach (var f in files)
                 {
                     string target = null;
@@ -2326,7 +2379,11 @@ namespace GameGuard
                     if (string.IsNullOrEmpty(target))
                     {
                         if (isLnk && LooksLikeSteamShortcut(f)) steamHint++;
-                        else unresolved++;
+                        else
+                        {
+                            failedNames.Add(Path.GetFileName(f));
+                            Log.Write("拖拽解析失败：" + f);
+                        }
                         continue;
                     }
 
@@ -2364,13 +2421,15 @@ namespace GameGuard
                 if (added > 0) parts.Add(string.Format("新增 {0} 个", added));
                 if (updated > 0) parts.Add(string.Format("为 {0} 个已有游戏更新了图标", updated));
                 if (skippedDup > 0) parts.Add(string.Format("跳过重复 {0} 个", skippedDup));
-                if (unresolved > 0) parts.Add(string.Format("无法解析 {0} 个（快捷方式未指向有效的 .exe）", unresolved));
+                if (failedNames.Count > 0)
+                    parts.Add(string.Format("无法解析 {0} 个：{1}（快捷方式里没有存储有效的程序路径）",
+                        failedNames.Count, string.Join("、", failedNames.ToArray())));
                 if (steamHint > 0) parts.Add(string.Format("跳过 {0} 个 Steam 协议快捷方式（请改用「从 Steam 库添加」按钮）", steamHint));
-                if (skippedDup + unresolved + steamHint > 0 || updated > 0)
+                if (skippedDup + failedNames.Count + steamHint > 0 || updated > 0)
                     MessageBox.Show(form,
                         "处理结果：\n· " + string.Join("\n· ", parts.ToArray()),
                         "拖拽添加", MessageBoxButtons.OK,
-                        unresolved + steamHint > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+                        failedNames.Count + steamHint > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
             };
 
             btnSteam.Click += (s, e) =>
