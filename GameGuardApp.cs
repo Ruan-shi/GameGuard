@@ -144,9 +144,10 @@ namespace GameGuard
             {
                 if (!File.Exists(CfgSumPath))
                 {
-                    // 首次启用校验：采纳现状作为基线（老用户无感升级）
+                    // 首次启用校验：采纳现状作为基线（老用户无感升级），同时建立备份
                     File.WriteAllText(CfgSumPath, ComputeFileSum(ConfigPath), Encoding.ASCII);
-                    Log.Write("已为 config.json 建立校验基线");
+                    File.Copy(ConfigPath, CfgBakPath, true);
+                    Log.Write("已为 config.json 建立校验基线与备份");
                     return true;
                 }
                 string expect = File.ReadAllText(CfgSumPath, Encoding.ASCII).Trim();
