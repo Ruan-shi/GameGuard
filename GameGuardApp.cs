@@ -262,6 +262,19 @@ namespace GameGuard
                 if (TryGetStr(raw, "tempStart", out s)) TempStart = s;
                 if (TryGetStr(raw, "tempEnd", out s)) TempEnd = s;
 
+                // 数值范围钳制：防止异常/负值配置破坏引擎
+                if (QuotaMinutes < 1) QuotaMinutes = 120;
+                if (QuotaMinutes > 1440) QuotaMinutes = 1440;
+                if (QuotaWarnMin < 1) QuotaWarnMin = 10;
+                if (PlayMinutes < 1) PlayMinutes = 60;
+                if (PlayMinutes > 480) PlayMinutes = 480;
+                if (ExtendMinutes < 1) ExtendMinutes = 5;
+                if (MaxExtend < 0) MaxExtend = 2;
+                if (ScheduleWarnMin < 1) ScheduleWarnMin = 3;
+                if (OutsideCountdown < 3) OutsideCountdown = 5;
+                if (QuotaUsedSec < 0) QuotaUsedSec = 0;
+                if (QuotaExtraSec < 0) QuotaExtraSec = 0;
+
                 object days;
                 if (raw.TryGetValue("scheduleDays", out days) && days is IEnumerable<object>)
                 {
@@ -868,6 +881,11 @@ namespace GameGuard
             n.Font = Base(10, false);
             n.TextAlign = HorizontalAlignment.Center;
             n.Bounds = new Rectangle(U(x), U(y), U(w), U(30));
+            // 只允许数字键（含退格/粘贴快捷键等控制键），禁止输入负号/小数点/字母
+            n.KeyPress += (s, e) =>
+            {
+                if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true;
+            };
             return n;
         }
 
